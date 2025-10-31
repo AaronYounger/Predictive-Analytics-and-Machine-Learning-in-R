@@ -1,0 +1,1033 @@
+---
+title: "DAT-4253 LM 7 - Classification - Summary Project"
+author: "Aaron Younger"
+date: "October 12, 2024"
+format:
+  html: 
+    code-fold: false
+    code-overflow: wrap
+execute:
+  warning: false
+  messages: false
+  echo: false
+  include: true
+toc: true
+editor: source
+---
+
+# Abstract
+In this lab four different classification models are explored using a problem presented by Mr. Diaz. Mr. Diaz wants to know what distinguishes and makes a top performing sales rep. The metric used to determine a top performing sales rep is net promoter score. To explore and answer this business problem a dataset was provided which included data from 21990 tech sales rep. Before Modeling Exploratory Data Analysis was used to explore categorical and numeric variables cleaning and exploring potential erros in the data before modeling. The dependent variable, net promoter score (nps), was transformed into a binary to be used in the classification models. Class 1 was a rep with an nps score of 9-10 and a rep with an nps score of 0-8 is in class 0. The first model used was a KNN model where numeric values had to be scaled, this is due to how KNN uses distance to calculate. KNN threshold tuning was found to be the best KNN model. Next Naive Bayes was used where numeric values had to be binned. Among these models Naive Bayes threshold was the best. Next Logistic Regression was explored where the log was taken of salary and years due to their skewness found in EDA. Among the Logistic Regression models, logistic regression using weighting was the best one. Finally a different types of classification trees were made. For these classification tree models, the best pruned tree weighted was the best classification tree model. Among the top models of the classification models logistic regression weighted was chosen as the best model. It had good class discrimination while having the highest balanced accuracy and F1 score. Model evaluation was used to explore this model further continuing to show why this model is fit for predicting high performing tech sales reps. Finally deployment advice was given for this model.\
+
+
+
+
+# Data Understanding
+
+## Correct Version of R Studio
+
+```{r}
+options(scipen=999)
+suppressWarnings(RNGversion("3.5.3"))
+```
+
+## Libraries
+
+```{r}
+library(xfun)
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(DataExplorer)
+library(dlookr)
+library(caret)
+library(pROC)
+library(gains)
+library(gridExtra)
+library(janitor)
+library(summarytools)
+library(psych)
+library(e1071)
+library(scorecard)
+library(woeBinning)
+library(klaR)
+library(rpart)
+library(rpart.plot)
+library(DALEX)
+
+
+```
+
+## Load the Data
+
+```{r}
+library(readxl)
+TechSales_Data <- read_excel("jaggia_ba_1e_TechSales_Reps.xlsx", 
+    sheet = "All Data") %>% 
+  mutate(across(where(is.character), as.factor))
+View(TechSales_Data)
+
+TechSales_Data$Female <- as.factor(TechSales_Data$Female)
+
+clean_names(TechSales_Data)
+
+```
+
+Comments on Loading in the Data:\
+It is important to note that all variables that where characters in the dataset have been transformed into factors.
+
+## EDA
+
+### Dataset Exploration
+
+```{r}
+TechSales_Data %>% head()
+TechSales_Data %>% tail()
+TechSales_Data %>% str()
+TechSales_Data %>% plot_intro()
+TechSales_Data %>% glimpse()
+TechSales_Data %>% plot_missing() ## No missing values in this dataset
+
+
+```
+
+Comments on Dataset Exploration:\
+This dataset has five numeric variables and five categorical variables. This datset does not contain any missing values.
+
+### Variable Exploration
+
+#### Dependent Variable formatting
+
+```{r}
+## Convert Dependent variable to a binary
+TechSales_Data <- TechSales_Data%>% 
+  mutate(depvar = factor(ifelse(TechSales_Data$NPS > 8, 1, 0), levels = c(0,1)))
+View(TechSales_Data)
+
+## Conversion to binary was successful
+ctable(as.factor(TechSales_Data$NPS), TechSales_Data$depvar)
+
+TechSales_Data <- TechSales_Data %>% 
+  dplyr::select(-NPS, - Sales_Rep)
+```
+
+Comments on Dependent Variable Transformation:\
+For classification I transformed the dependent variable to a binary. The dependent variable for this dataset is NPS which is a net promoter score. This net promoter score is on a scale of 1-10. To make this variable a binary employees who earn a NPS score of 9-10 will be classified into class 1, and any employee who ears a nps score of 1-8 will be classified into class 0. The reason for transforming the NPS variable is to distinguish what makes a top performing tech sales rep (NPS=9-10) compared to other employees.
+
+#### Proportion of Dependent Variables
+
+```{r}
+cat("Proportion of the Dependent Variable\n")
+prop.table(table(TechSales_Data$depvar))
+```
+
+Comments on Proportion of Dependent Variable:\
+The Dependent Variable is imbalanced in the dataset with the majority class being 0 accounting for approximately 80% of observations with class 1 only accounting for approximately 20% of the dataset.
+
+#### Numeric Varaible Exploration
+
+```{r}
+## This company has a lot of one and two year workers but after that employee's that have been working longer drop off drastically. 
+TechSales_Data %>% plot_histogram()
+
+## Years And Salary have the two highest skewness numbers both of them being skewed to the right
+skewness(TechSales_Data$Salary)
+skewness(TechSales_Data$Years)
+skewness(TechSales_Data$Age)
+skewness(TechSales_Data$Certficates)
+skewness(TechSales_Data$Feedback)
+
+## More Certifications means higher average salary
+TechSales_Data %>% 
+  group_by(Certficates) %>% 
+  summarise(avg_salary = mean(Salary)) %>% 
+  ggplot(aes(x =Certficates, y=avg_salary)) +
+  geom_col(fill='steelblue')+
+  labs(title = "Amount of Certifications compared to salary",
+       xlab = "Certificates",
+       ylab = "Salary")+
+  theme_minimal()
+
+## Relationship between Years and Salary is higher years have higher average salary
+
+TechSales_Data %>% 
+  group_by(Years) %>% 
+  summarise(avg_salary = mean(Salary)) %>% 
+  ggplot(aes(x =Years, y=avg_salary)) +
+  geom_col(fill='steelblue')+
+  labs(title = "Average Salary by Years",
+       xlab = "Years",
+       ylab = "Salary")+
+  theme_minimal()
+
+## Relationship between Salary and Feedback, the lower feedback given by pairs, the lower the average salary
+
+TechSales_Data %>%
+  # Create a temporary grouped version just for plotting
+  mutate(FeedbackGroup = floor(as.numeric(Feedback))) %>%
+  group_by(FeedbackGroup) %>%
+  summarise(avg_salary = mean(Salary, na.rm = TRUE)) %>%
+  ggplot(aes(x = factor(FeedbackGroup), y = avg_salary)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Average Salary by Feedback Group (1–4)",
+    x = "Feedback Group",
+    y = "Average Salary"
+  ) +
+  theme_minimal()
+
+
+plot_qq(TechSales_Data$Salary)
+
+
+
+```
+
+Comments on Numeric Variable Exploration:\
+All Numeric Variables has some level of skewness but Years and Salary had the largest values for skewness both being skewed to the right. This company has a majority of first and second year workers but significantly less 3-13 year employees. Different numeric variables were graphed with average salary to see if there were any relationship. Number of certifications, Years at company, and feedback all had a positive relationship with salary, meaning as certifications, years at company, and feedback score went up, so did Salary. This is an insight into correlation which will be plotted later. I also plotted a qq plot of salary to see if salary needs to be logged. (Stil deciding)
+
+#### Check for outliers
+
+```{r}
+## Look for outliers; Years and Salary are the only variables with outliers, they were also the variables with the highest skewness. 
+diagnose_outlier(TechSales_Data)
+
+TechSales_Data %>% plot_boxplot(by="Years")
+TechSales_Data %>% plot_boxplot(by="Salary")
+
+## I will not be removing any outliers as there are no variables that are alarming or dont make sense. The reason why Years has so many outliers is because of the large among of first and second year employees. I want to see any differences that are present based on years and reasoned that an employees length of working at a company is not good enough reason to cut off that employee as an observation.
+```
+
+Comments on outlier exploration:\
+There were only two numeric variables with outliers those being Years and salary. These variables also had the highest skew numbers among other numeric variables. I decided to not remove any outliers as there were no observations that did not make sense. Outliers are present in Years at company due to the massive amount of first and second year employees. I do not thing removing an observation based on the amount of years worked at company is a good reason as I want to see any relationships in the data based on years. Salary also has outliers but this is common in dollar variables due to its nature to be right skewed. The mean with and without outliers is not drastic and therefore no observations will be removed based on salary.
+
+#### Categorical Variable Exploration
+
+```{r}
+TechSales_Data %>% plot_bar(by="depvar")
+
+## Both Business and Female variables do not have a lot of deviation from the amount of 1's and 0's among there classes. For Business Software and Hardware receive very similar 1's and 0's. This is the same for female variable Men and Females receive very similar amounts of 1's and 0's with females receiving slightly more 1's. 
+
+
+## Proportion of dependent Variable Among Classes of College
+college_prop <- TechSales_Data %>%
+  group_by(College, depvar) %>%
+  summarise(count = n(), .groups = "drop_last") %>%
+  mutate(prop = count / sum(count)) %>%
+  tidyr::pivot_wider(
+    names_from = depvar,
+    values_from = prop,
+    names_prefix = "prop_"
+  )
+
+college_prop
+
+## If an employee went to college they are more likely to receive a 1 than 0.
+
+
+## Proportion of dependent Variable among Classes of personality
+personality_prop <- TechSales_Data %>%
+  group_by(Personality, depvar) %>%
+  summarise(count = n(), .groups = "drop_last") %>%
+  mutate(prop = count / sum(count)) %>%
+  tidyr::pivot_wider(
+    names_from = depvar,
+    values_from = prop,
+    names_prefix = "prop_"
+  )
+
+personality_prop
+
+## Analyst's and Sentinel's are a lot more likely to receive 0's than employees that are a Diplomat or Explorer
+
+
+```
+
+Comments on Categorical Variable Exploration:\
+The Dependent Variable is present in all categorical variables. For both the Business and Female variables, there is minimal variation in the proportion of 1’s and 0’s across their respective categories. This cannot be said for College and Personality Variables. If an employee went to college they are more likely to receive a 1 than employees that did not go to college. If an employee is either a sentinel or analyst they are significantly more unlikely to recieve 1's compared to if an employee is an explorer or diplomat.
+
+#### Plot Correlation
+
+```{r}
+plot_correlation(TechSales_Data)
+
+```
+
+Comments on Correlation Plot:\
+Certificates, Feedback, and Salary have the strongest positive correlation to the dependent variable. This indicates that as the number of certifications, feedback scores, and salary increase, the likelihood of an employee having a Net Promoter Score of 1 also increases.
+
+# Modeling
+
+## KNN Unweighted
+
+### Prepare Data for Unweighted Modeling
+
+```{r}
+## Scale Numeric Values
+TechSales_Data_scaled <- TechSales_Data %>%
+  mutate(across(where(is.numeric), ~ as.numeric(scale(.))))
+View(TechSales_Data_scaled)
+
+```
+
+Comments on why scaling numeric values is necessary:\
+Since the KNN model is a distance based model larger numeric scales will skew the distance measurements. Scaling the numeric variables makes sure each value contributes prportionally to distance and therefore makes the model more accurate.
+
+### Partition Datset
+
+```{r}
+set.seed(1)
+myindex <- createDataPartition(TechSales_Data_scaled$depvar, p=0.6, list = FALSE)
+trainset <- TechSales_Data_scaled[myindex,]
+testset <- TechSales_Data_scaled[-myindex,]
+
+cat("Proportion of DepVar in Trainset\n")
+prop.table(table(trainset$depvar))
+
+cat("Proportion of DepVar in testset\n")
+prop.table(table(testset$depvar))
+## Proportion of dependent variable across train set and test set is the same. Both of these sets represent the distribution of the true dataset.
+
+```
+
+#### Train Unweighted Model
+
+```{r}
+myCtrl <- trainControl(method = "CV", number = 10)
+myGrid <- expand.grid(.k=c(1:10))
+
+set.seed(1)
+
+knn_train_unweighted <- train(depvar ~., data = trainset, method = "knn", trControl = myCtrl, tuneGrid = myGrid)
+knn_train_unweighted
+
+```
+
+#### Predict Unweighted Model
+
+```{r}
+KNN_unweighted_predict <- predict(knn_train_unweighted, newdata = testset)
+knn_unweighted_cm <- confusionMatrix(KNN_unweighted_predict, testset$depvar, positive = "1")
+knn_unweighted_cm
+precision <- unname(knn_unweighted_cm$byClass['Pos Pred Value'])
+recall   <- unname(knn_unweighted_cm$byClass['Sensitivity'])
+KNN_unweighted_F1 <- 2 * ((precision * recall) / (precision + recall))
+cat("F1 Score:", round(KNN_unweighted_F1, 5), "\n")
+
+## Bad Balanced Accuracy, F1 Score and is predicting 0's more than 1's 
+
+```
+
+## KNN Weighted Oversampling
+
+### Prepare Data for oversampling
+
+```{r}
+myCtrl_sampling <- trainControl(method = "cv", number = 10, sampling = "up")
+
+myGrid_sampling <- expand.grid(.k=c(1:10))
+
+```
+
+#### Train Weighted Model
+
+```{r}
+set.seed(1)
+KNN_train_sampling <- train(depvar~., data = trainset, method = "knn", trControl=myCtrl_sampling, tuneGrid = myGrid_sampling)
+KNN_train_sampling
+
+
+```
+
+#### Predict Weighted Model
+
+```{r}
+knn_sampling_predict <- predict(KNN_train_sampling, newdata = testset)
+
+knn_sampling_cm <- confusionMatrix(knn_sampling_predict, testset$depvar, positive = '1')
+knn_sampling_cm
+precision_sampling <- unname(knn_sampling_cm$byClass['Pos Pred Value'])
+recall_sampling <- unname(knn_sampling_cm$byClass['Sensitivity'])
+knn_sampling_F1 <- 2 * ((precision_sampling * recall_sampling)/ (precision_sampling + recall_sampling))
+cat("F1 Score:", round(knn_sampling_F1, 5), "\n")
+
+## Although sensitivty and Specificity balance out a little, Accuracy, Balanced Accuracy, and F1 Score are worse than the unweighted model.
+
+```
+
+## KNN Weighted Threshold Tuning
+
+#### KNN with Treshold Tuning
+
+```{r}
+
+knn_class_prob <- predict(knn_train_unweighted, newdata = testset, type = 'prob')
+roc_curve <- roc(testset$depvar, knn_class_prob[,2])
+
+# find and report the optimal cut off
+optimal_cutoff <- coords(roc_curve, "best", ret = "threshold")
+cat("OPTIMAL CUTOFF VALUE OF:", optimal_cutoff$threshold,"\n\n")
+
+# rescore using the new optimal cutoff
+knn_class_opt <- ifelse(knn_class_prob[,2] >= optimal_cutoff$threshold, 1, 0)
+
+
+```
+
+#### Predict KNN with Threshold Tuning
+
+```{r}
+# Confusion Matrix
+knn_tuning_cm <- confusionMatrix(as.factor(knn_class_opt), as.factor(testset$depvar), positive = '1')
+knn_tuning_cm
+
+# Calculate the F1 Score
+precision <- unname(knn_tuning_cm$byClass['Pos Pred Value']) # synonyms
+recall    <- unname(knn_tuning_cm$byClass['Sensitivity'])   # synonyms
+knn_tuning_f1 <- 2 * ((precision * recall) / (precision + recall))
+cat("F1 Score: ", knn_tuning_f1, "\n")
+
+## Threshold Tuning is best model for KNN with a much more balanced Sensitivity and Specificity and the highest balanced accuracy and F1 score.
+```
+
+Comments on best model for KNN:\
+The best model out of the KNN models is the KNN model adjusted for threshold tuning.\
+
+## Naive Bayes
+
+### Prepare Data for Naive Bayes
+
+```{r}
+## Manual Binning
+## Code created with the assistance of AI, ChatGPT
+
+TechSales_binned <- TechSales_Data %>%
+  mutate(
+    # Age bins of size 10 → 1=20–29, 2=30–39, ..., 5=60–69
+    Age_bin = cut(Age, breaks = seq(20, 70, by = 10), labels = FALSE, include.lowest = TRUE),
+
+    # Years bins of size 5 → 1=1–5, 2=6–10, 3=11–15
+    Years_bin = cut(Years, breaks = c(1, 6, 11, 16), labels = FALSE, include.lowest = TRUE),
+
+    # Certificates bins of size 3 → 1=0–3, 2=4–6
+    Certificates_bin = cut(Certficates, breaks = c(-Inf, 3, Inf), labels = FALSE, include.lowest = TRUE),
+
+    # Feedback bins of size 2 → 1=1–2, 2=3–4
+    Feedback_bin = cut(Feedback, breaks = c(-Inf, 2, Inf), labels = FALSE, include.lowest = TRUE),
+
+    # Salary bins of size 20,000 → 1=20k–39,999, 2=40k–59,999, ..., 9=180k–199,999
+    Salary_bin = cut(Salary, breaks = seq(20000, 200000, by = 20000), labels = FALSE, include.lowest = TRUE)
+  )
+
+names(TechSales_binned)
+
+TechSales_binned <- TechSales_binned %>% 
+  dplyr::select(-Age, -Years, -Certficates, -Feedback, -Salary)
+View(TechSales_binned)
+
+TechSales_binned <- TechSales_binned %>%
+  mutate(
+    Age_bin = as.factor(Age_bin),
+    Years_bin = as.factor(Years_bin),
+    Certificates_bin = as.factor(Certificates_bin),
+    Feedback_bin = as.factor(Feedback_bin),
+    Salary_bin = as.factor(Salary_bin)
+  )
+
+TechSales_binned %>% str()
+
+TechSales_binned %>% plot_bar(by="depvar")
+
+
+```
+
+Comments on data preparation for Naive Bayes:\
+I manually put in the bins, below is a key to what each number represents for the bins.\
+
+**Key for Binned Variables:**
+
+-   Age_bin: 1 = 20–29, 2 = 30–39, 3 = 40–49, 4 = 50–59, 5 = 60–69.\
+-   Years_bin: 1 = 1–5 years, 2 = 6–10 years, 3 = 11–15 years.\
+-   Certificates_bin: 1 = 0–3 certificates, 2 = 4–6 certificates.\
+-   Feedback_bin: 1 = Feedback score 1–2, 2 = Feedback score 3–4.\
+-   Salary_bin: 1 = 20,000–39,999, 2 = 40,000–59,999, 3 = 60,000–79,999, 4 = 80,000–99,999, 5 = 100,000–119,999, 6 = 120,000–139,999, 7 = 140,000–159,999, 8 = 160,000–179,999, 9 = 180,000–199,999.\
+
+### Partition Dataset
+
+```{r}
+set.seed(1)
+myindex_nb <- createDataPartition(TechSales_binned$depvar, p=0.6, list = FALSE)
+trainset_nb <- TechSales_binned[myindex_nb,]
+testset_nb <- TechSales_binned[-myindex_nb,]
+
+cat("Proportion of Depvar for Trainset\n")
+prop.table(table(trainset_nb$depvar))
+
+cat("Proportion of Depvar for Testset\n")
+prop.table(table(testset_nb$depvar))
+
+
+
+```
+
+#### Train Unweighted NB Model
+
+```{r}
+
+nb_ctrl <- trainControl(method = "cv", number = 10, allowParallel = FALSE)
+
+set.seed(1)
+nb_unweighted <- train(
+  depvar ~ .,
+  data = trainset_nb,
+  method = "nb",
+  trControl = nb_ctrl,
+  tuneGrid = data.frame(fL = 1, usekernel = TRUE, adjust = 1) # usekernel = true for non parametric, usekernel = False for normal distribution
+)
+nb_unweighted
+
+
+
+
+```
+
+Comments on Unweighted NB model:\
+The Accuracy is around 80% but the kappa = 0, which means the models predictions are no better than always guessing the majority class.
+
+#### Predict Unweighted NB Model
+
+```{r}
+nb_unweighted_predict <- predict(nb_unweighted, newdata = testset_nb)
+confusionMatrix(nb_unweighted_predict, testset_nb$depvar, positive = '1')
+
+
+
+```
+
+Comments on unweighted Naive Bayes Model:\
+This model has no minority class predictive power making this model not usable.
+
+## Weighted Naive Bayes
+
+#### Threshold Tuning Naive Bayes
+
+```{r}
+nb_class_prob <- predict(nb_unweighted, newdata = testset_nb, type = 'prob')
+roc_curve <- roc(testset_nb$depvar, nb_class_prob[,2])
+
+# find and report the optimal cut off
+optimal_cutoff <- coords(roc_curve, "best", ret = "threshold")
+cat("OPTIMAL CUTOFF VALUE OF:", optimal_cutoff$threshold,"\n\n")
+
+# rescore using the new optimal cutoff
+nb_class_opt <- ifelse(nb_class_prob[,2] >= optimal_cutoff$threshold, 1, 0)
+```
+
+The cutoff value is unusually low, this supports the fact that there is class imbalance in the dataset however the classes are not so severely imbalanced to produce a cutoff value that low.\
+
+#### Predict Threshold Tuning Naive Bayes
+
+```{r}
+# Confusion Matrix
+nb_tuning_cm <- confusionMatrix(as.factor(nb_class_opt), as.factor(testset_nb$depvar), positive = '1')
+nb_tuning_cm
+
+# Calculate the F1 Score
+precision <- unname(nb_tuning_cm$byClass['Pos Pred Value']) # synonyms
+recall    <- unname(nb_tuning_cm$byClass['Sensitivity'])   # synonyms
+nb_tuning_f1 <- 2 * ((precision * recall) / (precision + recall))
+cat("F1 Score: ", nb_tuning_f1, "\n")
+
+## Threshold Tuning is best model for KNN with a much more balanced Sensitivity and Specificity and the highest balanced accuracy and F1 score.
+```
+
+Comments on threshold Tuning NB model:\
+This model is a big improvement from the unweighted Naive Bayes model. It has good class discrimination, higher F1 score and moderately high Balanced Accuracy. This is the best model from Naive Bayes.
+
+## Logistic Regression Unweighted
+
+### Prepare Data For Logistic Regression
+
+```{r}
+## Transfrom into log for Logistic REgression.
+skewness(TechSales_Data$Salary)
+skewness(TechSales_Data$Years)
+
+# Create a new dataset with log-transformed Salary and Years
+TechSales_log <- TechSales_Data %>%
+  mutate(
+    log_Salary = log1p(Salary), 
+    log_Years = log1p(Years)
+  )
+
+TechSales_log <- TechSales_log %>% 
+  dplyr::select(-Years, -Salary)
+
+View(TechSales_log)
+
+
+```
+
+### Partition Data For Logistic Regression
+
+```{r}
+set.seed(1)
+myindex_lr <- createDataPartition(TechSales_log$depvar, p=0.6, list=FALSE)
+trainset_lr <- TechSales_log[myindex_lr,]
+testset_lr <- TechSales_log[-myindex_lr,]
+
+prop.table(table(trainset_lr$depvar))
+prop.table(table(testset_lr$depvar))
+
+
+```
+
+#### Train Unweighted Model
+
+```{r}
+myCtrl_lr <- trainControl(method = "cv", number = 10, allowParallel = FALSE)
+
+set.seed(1)
+logit_unweighted <- train(depvar~., data=trainset_lr, method="glm", family="binomial", trControl = myCtrl_lr)
+summary(logit_unweighted)
+
+library(car)
+vif(logit_unweighted$finalModel)
+caret::varImp(logit_unweighted$finalModel)
+
+```
+
+Potential multicollinearity in Diplomat and Explorer. Certificates and Feedback have most variable importance when it comes to the dependent variable.
+
+#### Predict Unweighted Model
+
+```{r}
+logit_unweighted_base <- predict(logit_unweighted, newdata = testset_lr, type="raw")
+CM_lr_unweighted <- confusionMatrix(logit_unweighted_base, as.factor(testset_lr$depvar), positive = '1')
+CM_lr_unweighted
+
+precision <- unname(CM_lr_unweighted$byClass['Pos Pred Value'])
+recall <- unname(CM_lr_unweighted$byClass['Sensitivity'])
+unweighted_lr_f1 <- 2 * ((precision * recall) / (precision + recall))
+cat("F1 Score: ", unweighted_lr_f1, "\n")
+```
+
+This model overclassifies the 0 class and underclassifies the 1 class as seen in the difference between sensitivity and specificity. The balanced accuracy is also moderately low.
+
+## Logistic Regression Weighted
+
+#### Train Using Weights
+
+```{r}
+class_counts_lr <- table(trainset_lr$depvar)
+wts_lr <- ifelse(trainset_lr$depvar == 1,
+              (1 / class_counts_lr[2]) * 0.5 * sum(class_counts_lr),
+              (1 / class_counts_lr[1]) * 0.5 * sum(class_counts_lr))
+
+# rerun the model using these weights
+set.seed(1)
+weighted_lr <- train(depvar ~ ., 
+                        data = trainset_lr,
+                        method = "glm", family = "binomial",
+                        trControl = myCtrl_lr,
+                        weights = wts_lr)
+summary(weighted_lr)
+
+vif(weighted_lr$finalModel)
+caret::varImp(weighted_lr$finalModel)
+
+```
+
+Still potential multicollinearity in Diplomat and Explorer. The most important variables are still certificates and feedback in realtion to the dependent variable.
+
+#### Predict using Weights
+
+```{r}
+logit_weighted <- predict(weighted_lr, newdata = testset_lr, type="raw")
+CM_lr_weighted <- confusionMatrix(logit_weighted, as.factor(testset_lr$depvar), positive = '1')
+CM_lr_weighted
+
+precision <- unname(CM_lr_weighted$byClass['Pos Pred Value'])
+recall <- unname(CM_lr_weighted$byClass['Sensitivity'])
+weighted_lr_f1 <- 2 * ((precision * recall) / (precision + recall))
+cat("F1 Score: ", weighted_lr_f1, "\n")
+
+
+```
+
+A much better model compared to the unweighted logistic regression model. Sensitivity and specificity are a lot more balanced in this model. The F1 score and Balanced accuracy are also higher in this weighted model as well.
+
+## Logistic Regression Threshold Tuning + weighted
+
+#### Train Using Threshold Tuning + weighted
+
+```{r}
+lr_class_prob <- predict(weighted_lr, newdata = testset_lr, type = 'prob')
+roc_curve <- roc(testset_lr$depvar, lr_class_prob[,2])
+
+# find and report the optimal cut off
+optimal_cutoff_lr <- coords(roc_curve, "best", ret = "threshold")
+cat("OPTIMAL CUTOFF VALUE OF:", optimal_cutoff_lr$threshold,"\n\n")
+
+# rescore using the new optimal cutoff
+lr_class_opt <- ifelse(lr_class_prob[,2] >= optimal_cutoff_lr$threshold, 1, 0)
+
+# Confusion Matrix
+lr_tuning_cm <- confusionMatrix(as.factor(lr_class_opt), as.factor(testset_lr$depvar), positive = '1')
+lr_tuning_cm
+
+# Calculate the F1 Score
+precision <- unname(lr_tuning_cm$byClass['Pos Pred Value']) # synonyms
+recall    <- unname(lr_tuning_cm$byClass['Sensitivity'])   # synonyms
+lr_tuning_f1 <- 2 * ((precision * recall) / (precision + recall))
+cat("F1 Score: ", lr_tuning_f1, "\n")
+
+## Threshold Tuning is best model for KNN with a much more balanced Sensitivity and Specificity and the highest balanced accuracy and F1 score.
+
+
+
+```
+
+Not as good of a model as just weighting, although it has higher sensitivity which represents the minority class, specificity drops and the model loses the balance of specificity and sensitivity the weighted model had. The F1 score is slightly lower in this model and the Balanced accuracy is slightly above the balanced accuracy in the weighted model. The Best model for Logistic Regression is the Logistic Model with just weighting.
+
+## Classification Trees
+
+### Partition Data
+
+```{r}
+set.seed(1)
+myindex_tree <- createDataPartition(TechSales_Data$depvar, p =0.7, list=FALSE)
+trainset_tree <- TechSales_Data[myindex_tree,]
+testset_tree <- TechSales_Data[-myindex_tree,]
+
+prop.table(table(trainset_tree$depvar))
+prop.table(table(testset_tree$depvar))
+
+```
+
+#### Full Tree
+
+```{r}
+set.seed(1)
+full_tree <- rpart(as.factor(depvar) ~., data=trainset_tree, method="class", control= rpart.control(minsplit=1, minbucket=1, cp=0, maxdepth=30))
+
+cat("Full Tree cp table\n")
+print(full_tree$cptable, digits = 3)
+
+cat("Unweighted Variable Importance\n")
+print(caret::varImp(full_tree))
+
+## Print full tree
+prp(full_tree,
+    type = 1,
+    extra = 1,
+    under = TRUE)
+
+
+
+
+
+```
+
+#### Predict Full Tree
+
+```{r}
+## Confusion Matrix
+uf_predicted_class <- predict(full_tree, testset_tree, type = "class")
+pred <- factor(as.character(uf_predicted_class), levels = c("0","1"))
+ref <- factor(as.character(testset_tree$depvar), levels = c("0","1"))
+full_conf_matrix <- caret::confusionMatrix(pred, ref, positive="1")
+full_conf_matrix
+
+## F1_Score
+uf_F1 <- with(as.list(full_conf_matrix$byClass),
+				 (2*(`Pos Pred Value` * Sensitivity)) / (`Pos Pred Value` + Sensitivity))
+cat("F1 Score: ", uf_F1, "\n")
+
+```
+
+The Full Tree struggles with the class imbalance in the dataset as the specificity value is much higher than the sensitivity value.
+
+## Best Pruned Tree
+
+#### Best Pruned Tree Unweighted
+
+```{r}
+
+myCtrl_tree <- trainControl(method = "cv", number = 10, allowParallel = FALSE)
+
+
+bp_unw_tree <- train(depvar ~.,  data = trainset_tree,
+								 method = "rpart",     
+								 trControl = myCtrl_tree,
+								 tuneGrid = NULL)
+
+cat("unweighted best pruned cptable\n")
+bp_unw_tree$finalModel$cptable
+
+cat("Variable Importance\n")
+print(caret::varImp(bp_unw_tree))
+
+cat("\nTREE DIAGRAM WITH NODE COUNTS\n")
+prp(bp_unw_tree$finalModel, type = 1, extra = 1  , under = TRUE, digits=3)
+cat("\nTREE DIAGRAM SHOWING PROBABILTIES AND NODE PROPORTION\n")
+prp(bp_unw_tree$finalModel, type = 1, extra = 104, under = TRUE, digits=3)
+
+
+```
+
+#### Predict Best Pruned Unweighted Tree
+
+```{r}
+unwbp_predicted_class <- predict(bp_unw_tree, testset_tree, type="raw")
+unweighted_tree <- caret::confusionMatrix(unwbp_predicted_class,
+                                 as.factor(testset_tree$depvar), positive = "1")
+unweighted_tree
+
+unweighted_tree_f1 <- with(as.list(unweighted_tree$byClass),
+				 (2*(`Pos Pred Value` * Sensitivity)) / (`Pos Pred Value` + Sensitivity))
+cat("F1 Score: ", unweighted_tree_f1, "\n")
+```
+
+Comments on best pruned unweighted tree:\
+This model is showing problems representing the minority class. This can be seen in the very low sensitivity value. This model is also overaclassifying the majority class as can be seen in the very high specificity number. This model also has a lower f1 score than the full tree. It is important to note that the full tree having higher accuracy or f1 score can be expected as it can overfit to the data it is being trained on.
+
+## Best Pruned Tree Weighted
+
+#### Train Best Pruned Tree Weighted
+
+```{r}
+class_counts_tree <- table(trainset_tree$depvar)
+
+cat("Class Counts (n) for Admitted from the Training Dataset")
+class_counts_tree
+
+cat("\nClass Total:", sum(class_counts_tree), "\n")
+
+wts_tree <- ifelse(trainset_tree$depvar == 1,
+       (0.5 * sum(class_counts_tree)) / class_counts_tree[2],
+       (0.5 * sum(class_counts_tree)) / class_counts_tree[1])
+
+
+set.seed(1)
+w_bp_tree <- train(depvar~., data = trainset_tree, method = "rpart", trControl = myCtrl_tree, tuneGrid = NULL, weights = wts_tree)
+
+cat("Weighted Best Pruned Tree cp Table\n")
+w_bp_tree$finalModel$cptable
+
+cat("\nWeighted Variable Importance\n")
+print(caret::varImp(w_bp_tree))
+
+cat("\nTREE DIAGRAM WITH NODE COUNTS\n")
+prp(w_bp_tree$finalModel, type = 1, extra = 1  , under = TRUE, digits=3)
+cat("\nTREE DIAGRAM SHOWING PROBABILTIES AND NODE PROPORTION\n")
+prp(w_bp_tree$finalModel, type = 1, extra = 104, under = TRUE, digits=3)
+
+```
+
+#### Predict Best Pruned Tree Weighted
+
+```{r}
+wb_predicted_class <- predict(w_bp_tree, testset_tree, type = "raw")    
+wb_CM <- caret::confusionMatrix(wb_predicted_class, testset_tree$depvar, positive = "1")  
+cat("\nCONFUSION MATRIX AT DEFAULT CUTOFF VALUE\n")
+wb_CM
+
+wb_F1 <- with(as.list(wb_CM$byClass),
+				 (2*(`Pos Pred Value` * Sensitivity)) / (`Pos Pred Value` + Sensitivity))
+cat("F1 Score: ", wb_F1, "\n")
+```
+
+Comments on Weighted Best Pruned Tree:\
+This model is the best model among the different classification tree models. The class distinction is very good as specificity and sensitivity are very close together. This model also has the highest balanced accuracy and F1 score.
+
+# Evaluation
+
+## Model Comparison: Choosing Best Model
+
+```{r}
+extract_metrics <- function(cm, f1) {
+  c(Accuracy           = unname(cm$overall["Accuracy"]),
+    Kappa              = unname(cm$overall["Kappa"]),
+    Sensitivity        = unname(cm$byClass["Sensitivity"]),
+    Specificity        = unname(cm$byClass["Specificity"]),
+    `Pos Pred Value`   = unname(cm$byClass["Pos Pred Value"]),
+    Prevalence         = unname(cm$byClass["Prevalence"]),
+    `Detection Rate`   = unname(cm$byClass["Detection Rate"]),
+    `Balanced Accuracy`= unname(cm$byClass["Balanced Accuracy"]),
+    F1                 = f1)}
+
+metrics_table <- data.frame(
+  KNN_Threshold    = extract_metrics(knn_tuning_cm, knn_tuning_f1),
+  NB_Threshold = extract_metrics(nb_tuning_cm, nb_tuning_f1),
+  LR_Weights   = extract_metrics(CM_lr_weighted, weighted_lr_f1),
+  BP_weighted = extract_metrics(wb_CM, wb_F1))
+
+metrics_table <- tibble::rownames_to_column(metrics_table, var = "Metric")
+knitr::kable(metrics_table, digits = 3, caption = "MODEL PERFORMANCE COMPARISON")
+```
+
+Comments on Best Model:\
+Based on the confusion matrix metrics and F1 score of the best models from the different classification models used, the chosen best model to futher evaluate is the Logistic Regression model using weighting.
+
+### Logistic Regression Deep Dive into Confusion Matrix and F1 Score
+
+```{r}
+logit_weighted <- predict(weighted_lr, newdata = testset_lr, type="raw")
+CM_lr_weighted <- confusionMatrix(logit_weighted, as.factor(testset_lr$depvar), positive = '1')
+CM_lr_weighted
+
+precision <- unname(CM_lr_weighted$byClass['Pos Pred Value'])
+recall <- unname(CM_lr_weighted$byClass['Sensitivity'])
+weighted_lr_f1 <- 2 * ((precision * recall) / (precision + recall))
+cat("F1 Score: ", weighted_lr_f1, "\n")
+
+```
+
+-   Accuracy (0.7635) – 76.35% of predictions were correct.
+
+-   95% CI (0.7545 – 0.7724) – The true accuracy likely lies between 75.45% and 77.24%.
+
+-   No Information Rate (0.7979) – The majority (non-positive) class makes up 79.79% of the data, meaning a model that always predicts “0” would already achieve about 80% accuracy.
+
+-   P-Value (1) – The model’s accuracy is not statistically better than simply predicting the majority class every time.
+
+-   Kappa (0.4212) – Shows moderate agreement between predicted and actual outcomes beyond random chance.
+
+-   McNemar’s Test (p \< 0.0000000000000000002) – Indicates a significant difference between the types of errors the model makes (false positives vs. false negatives).
+
+-   Sensitivity (0.7722) – The model correctly identified 77.22% of the positive (1) cases. This means it successfully detects most of the positives.
+
+-   Specificity (0.7613) – The model correctly identified 76.13% of the negative (0) cases, showing good ability to distinguish between the two classes.
+
+-   Pos Pred Value (Precision, 0.4505) – Of all cases predicted as positive, only 45.05% were actually positive. This suggests the model produces a fair number of false positives.
+
+-   Neg Pred Value (0.9295) – Of all cases predicted as negative, 92.95% were actually negative, indicating strong reliability when the model predicts “0.”
+
+-   Prevalence (0.2021) – The positive class makes up 20.21% of the dataset, confirming the data are imbalanced.
+
+-   Detection Rate (0.1561) – About 15.61% of all samples were correctly identified as belonging to the positive class.
+
+-   Detection Prevalence (0.3465) – Roughly 34.65% of cases were predicted as positive, regardless of correctness, showing the model predicts more positives than truly exist.
+
+-   Balanced Accuracy (0.7668) – Averaging sensitivity and specificity, the model correctly identifies both classes about 76.7% of the time, showing strong overall balance.
+
+-   F1 Score (0.5690) – Indicates moderate balance between precision and recall. The model finds many of the positive cases but still mislabels some negatives as positives.
+
+### Model Evaluation Charts
+
+```{r}
+# convert the depvar back to numeric to plot
+testset_lr$depvar <- as.numeric(as.character(testset_lr$depvar))
+
+predicted_prob <-  predict(weighted_lr, testset_lr, type = "prob")    
+
+# gains table
+gains_table <- gains(testset_lr$depvar, predicted_prob[,2])
+gains_table
+
+# cumulative gains chart
+plot(c(0, gains_table$cume.pct.of.total*sum(testset_lr$depvar)) ~ c(0, gains_table$cume.obs), xlab = '# of cases', ylab = "Cumulative", type = "l", main="Cumulative Gains Chart")
+lines(c(0, sum(testset_lr$depvar))~c(0, dim(testset_lr)[1]), col="red", lty=2)
+
+#Decile-Wise Lift Chart
+barplot(gains_table$mean.resp/mean(testset_lr$depvar), names.arg=gains_table$depth, 
+        xlab="Percentile", ylab="Gains", ylim=c(0,3), 
+				col="blue", main="Decile-Wise Lift Chart")
+abline(h=c(1),col="red")
+
+#ROC with AUC
+roc_object <- roc(testset_lr$depvar, predicted_prob[,2])
+plot.roc(roc_object)
+auc(roc_object)
+
+```
+
+Comments on Model Evaluation Charts:\
+The evaluation results demonstrate that the model effectively ranks cases by their likelihood of belonging to the positive class. The gains table indicates that most of the model’s predictive strength is concentrated in the top-ranked cases, meaning the model identifies a large share of positive outcomes early on.\
+
+The Cumulative Gains Chart reinforces this, as the model’s curve (black line) rises well above the baseline (red dashed line), confirming that it performs substantially better than random guessing. Similarly, the Decile-Wise Lift Chart shows that the first few deciles have lift values greater than 1, meaning these top portions of the data contain a disproportionately high number of actual positive cases.\
+
+Finally, the ROC Curve and AUC score of 0.8494 indicate that the model has strong discriminatory power—it can reliably distinguish between positive and negative outcomes across various thresholds. Overall, these results confirm that the model performs effectively in identifying and ranking likely positive cases.\
+
+### Dalex Graph
+
+```{r}
+## Code made through AI assistance ChatGPT
+
+# 1) Build X and y that match the model's training columns
+X_test <- testset_lr %>% dplyr::select(-depvar) %>% as.data.frame()  # don't drop by index
+y_test <- as.integer(as.character(testset_lr$depvar))                # 0/1 numeric
+
+# 2) Predict function for caret classification models (prob of class "1")
+pfun <- function(m, newdata) {
+  predict(m, newdata, type = "prob")[, "1"]
+}
+
+# 3) Create explainer
+explainer_lr <- DALEX::explain(
+  model = weighted_lr,
+  data  = X_test,
+  y     = y_test,
+  predict_function = pfun,
+  label = "Weighted LR"
+)
+
+# 4) Feature importance
+pFP <- explainer_lr |>
+  model_parts() |>
+  plot(show_boxplots = FALSE) +
+  ggtitle("Feature Importance")
+
+# 5) Residual diagnostics
+pResid <- explainer_lr |>
+  model_diagnostics() |>
+  plot(variable = "y", yvariable = "residuals", smooth = FALSE)
+
+# 6) Arrange plots
+library(gridExtra)
+grid.arrange(pFP, pResid, nrow = 1)
+
+```
+
+Comments on Dalex Chart:\
+The Feature Importance chart shows that the model most important variables are Certificates and Personality when distinguishing between the two outcome classes. These predictors contribute the most to improving classification accuracy when permuted. In contrast, variables such as Age, Business, and Female have minimal influence on the model’s predictions, indicating they add little explanatory power once the stronger predictors are considered.\
+
+From the Model Diagnostics (Residuals) plot, we see that most residuals cluster near 0, with a few points extending toward the upper limit (+1). This pattern suggests that while the model predicts many observations accurately, there are some cases it systematically misclassifies. This aligns with the dataset’s class imbalance, where class 0 dominates the other.\
+
+# Deployment
+
+The model shows strong overall discrimination Auc = 0.85 and performs better than random chance, indicating it’s suitable for limited deployment or pilot testing. Key predictors such as Certificates and Personality drive most of the model’s predictive power, providing useful insights for decision-making. However, residual bias toward the majority class suggests the model may underperform on minority outcomes, so adjustments like class weighting or threshold tuning are recommended. Given its interpretability and stability, the model is deployment-ready but should be monitored and retrained to help mitigate class imbalance.
+
+# Citations
+
+```{r}
+# Display R version
+cat("R Version Information:\n")
+print(R.version.string)
+
+# Create a data frame of package versions
+pkg_versions <- data.frame(
+  Package = c(
+    "xfun", "readxl", "tidyverse", "dplyr", "ggplot2", "DataExplorer", "dlookr",
+    "caret", "pROC", "gains", "gridExtra", "janitor", "summarytools", "psych",
+    "e1071", "scorecard", "woeBinning", "klaR", "rpart", "rpart.plot", "DALEX"
+  ),
+  Version = sapply(c(
+    "xfun", "readxl", "tidyverse", "dplyr", "ggplot2", "DataExplorer", "dlookr",
+    "caret", "pROC", "gains", "gridExtra", "janitor", "summarytools", "psych",
+    "e1071", "scorecard", "woeBinning", "klaR", "rpart", "rpart.plot", "DALEX"
+  ), function(pkg) as.character(packageVersion(pkg)))
+)
+
+# Print package versions
+print(pkg_versions, row.names = FALSE)
+
+# Optional: export to CSV for appendix
+# write.csv(pkg_versions, "Package_Versions.csv", row.names = FALSE)
+
+# Add a source citation for ChatGPT
+cat("\nSource Citation:\n")
+cat("ChatGPT (GPT-5, OpenAI). (2025). Assistance with R coding and model interpretation. Retrieved from https://chat.openai.com/\n")
+
+```
