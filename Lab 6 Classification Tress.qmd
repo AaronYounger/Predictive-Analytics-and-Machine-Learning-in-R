@@ -1,0 +1,458 @@
+---
+title: "DAT-4253 LM 6 CLASSIFICATION TREES"
+author: "Aaron Younger"
+format:
+  html: 
+    code-fold: false
+    code-overflow: wrap
+execute:
+  warning: false
+  messages: false
+  echo: true
+  include: true
+toc: false
+toc-location: left
+number-sections: false
+editor: source
+---
+
+# Business Understanding
+
+Derek Anderson is an institutional researcher at a major university. The university has set a goal to increase the number of first-year freshmen students who graduate within four years by 20% in five years. Derek is asked by his boss to create a model that would flag any freshmen student who has a high likelihood of not being able to graduate within four years to help with early intervention.
+
+# Data Understanding
+
+-   Sex of Student (Male or Female).
+-   White; Whether the student is Caucasian.
+-   HS GPA; The students high school GPA.
+-   SAT; The students SAT Score.
+-   GPA; The Students College GPA.
+-   College Parent; Whether the student had parents that went to college.
+-   Grad; Whether that student graduated in four years. This is the Dependent Variable, 1 = they graduated in four years 0 = they did not graduate in four years.
+
+```{r}
+## Libraries
+library(readxl)
+library(tidyverse)
+library(DataExplorer)
+library(e1071)
+library(dlookr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(gains)
+library(pROC)
+
+
+```
+
+## EDA
+
+```{r}
+library(readxl)
+Graduate_Data <- read_excel("jaggia_ba_2e_ch13_data.xlsx", 
+    sheet = "Graduate_Data")
+View(Graduate_Data)
+
+library(readxl)
+Graduate_data_score <- read_excel("jaggia_ba_2e_ch13_data.xlsx", 
+    sheet = "Graduate_Score")
+View(Graduate_data_score)
+
+Graduate_Data <- Graduate_Data %>% 
+  select(-GPA)
+view(Graduate_Data)
+
+
+Graduate_data_score <- Graduate_data_score %>% 
+  select(-GPA)
+view(Graduate_data_score)
+
+Graduate_Data <- Graduate_Data %>% 
+  rename(HS_GPA = 'HS GPA')
+
+Graduate_Data <- Graduate_Data %>% 
+  rename(College_Parent = 'College Parent')
+
+Graduate_data_score <- Graduate_data_score %>% 
+  rename(HS_GPA = 'HS GPA')
+
+Graduate_data_score <- Graduate_data_score %>% 
+  rename(College_Parent = 'College Parent')
+
+```
+
+```{r}
+Graduate_Data %>% head()
+Graduate_Data %>% tail()
+Graduate_Data %>% plot_intro
+Graduate_Data %>% str()
+Graduate_Data %>% plot_missing()
+
+Graduate_Data %>% plot_histogram()
+skewness(Graduate_Data$HS_GPA)
+skewness(Graduate_Data$GPA)
+skewness(Graduate_Data$SAT)
+
+
+Graduate_Data %>% plot_bar(by="Grad")
+
+dlookr::diagnose_outlier(Graduate_Data)
+
+boxplot(Graduate_Data$SAT, plot = FALSE)$out
+
+range(Graduate_Data$SAT) ## Some students have scored 0 on their SAT ??
+range(Graduate_Data$GPA)
+range(Graduate_Data$`HS GPA`)
+
+Graduate_Data %>% 
+  filter(SAT == 0) %>% 
+  select(SAT, Grad)
+
+## Imbalanced Dataset, More 1's than zeros, model will most likely favor predicting ones. 
+cat("Proportion of Dependent Variable \n")
+prop.table(table(Graduate_Data$Grad))
+
+Graduate_Data %>% plot_correlation() ## The GPA variables have the highest positive correlation to students graduating in four years
+
+```
+
+Comments on EDA:\
+This dataset contains no missing values. The numeric values are relatively symmetrical all having slight left skewness. The dependent variable is seen in all categorical variables. Outliers are present in the variables HS GPA, SAT, and GPA however the outliers do not significantly affect the mean so were kept in as observations. The dataset is imbalanced, the dependent variable has majority 1's which will be something to reconcile in modeling. Both HS GPA and GPA have the highest positive correlation to the students graduating in four years. It is important to note that for modeling, the model is supposed to be detecting students that are unlikely to graduate in four years, which is the 0 value of the dependent variable.
+
+# Data Preperation
+
+```{r}
+Graduate_Data$Sex <- as.factor(Graduate_Data$Sex)
+Graduate_Data$White <- as.factor(Graduate_Data$White)
+Graduate_Data$College_Parent <- as.factor(Graduate_Data$College_Parent)
+Graduate_Data %>% str()
+
+Graduate_data_score$Sex <- as.factor(Graduate_data_score$Sex)
+Graduate_data_score$White <- as.factor(Graduate_data_score$White)
+Graduate_data_score$College_Parent <- as.factor(Graduate_data_score$College_Parent)
+Graduate_data_score %>% str()
+
+
+```
+
+Comments on Data Preparation:\
+Factors were assigned to sex, white, and college parent so they would be treated as levels as opposed to numeric or character values by the model.
+
+# Modeling
+
+## Partition Data
+
+```{r}
+set.seed(1)
+my_index <- createDataPartition(Graduate_Data$Grad, p=0.7, list=FALSE)
+trainset <- Graduate_Data[my_index,]
+testset <- Graduate_Data[-my_index,]
+ 
+## The train and test split by depvar are very close which is good
+cat("test set split by depvar \n")
+prop.table(table(trainset$Grad))
+cat("Train Set split by depvar \n")
+prop.table(table(testset$Grad))
+
+```
+
+Comments on Partitioning:\
+Before modeling the dataset is partitioned into a 70/30 split so the data can be trained then tested. A set.seed of 1 was also given for reproducibility of the model results. The proportion of the dependent variable was very close between the trainset and testset.
+
+## Grow Full Tree
+
+```{r}
+set.seed(1)
+full_tree <- rpart(as.factor(Grad) ~., data=trainset, method="class", control= rpart.control(minsplit=1, minbucket=1, cp=0, maxdepth=30))
+
+cat("Full Tree cp table\n")
+print(full_tree$cptable, digits = 3)
+
+cat("Unweighted Variable Importance\n")
+print(caret::varImp(full_tree))
+
+## Print full tree
+prp(full_tree,
+    type = 1,
+    extra = 1,
+    under = TRUE)
+
+## Confusion Matrix
+uf_predicted_class <- predict(full_tree, testset, type = "class")
+pred <- factor(as.character(uf_predicted_class), levels = c("0","1"))
+ref <- factor(as.character(testset$Grad), levels = c("0","1"))
+uf_conf_matrix <- caret::confusionMatrix(pred, ref, positive="0") ## The positive value is 0 because the business problem is interested in students that did not graduate in four years
+uf_conf_matrix
+
+## F1_Score
+uf_F1 <- with(as.list(uf_conf_matrix$byClass),
+				 (2*(`Pos Pred Value` * Sensitivity)) / (`Pos Pred Value` + Sensitivity))
+cat("F1 Score: ", uf_F1, "\n")
+
+```
+
+Comments on Full Tree:\
+The first model made was a full classification tree. The full tree was printed along with a cptable and variable importance. The CP table helps decide how much to prune the full classification tree. The table shows model complexity along with error rate. The best pruned tree is usually the CP with the lowest xerror. Variable importance helps in determining which variables are important, in this model SAT, HS GPA, and College Parent are important to the dependent variable. A confusion matrix and F1 score was printed to help determine how good the model is.\
+
+Confusion Matrix and F1 Score comments\
+**Note: The positive class is 0**\
+- Accuracy (0.6133) – 61.33% of predictions were correct.\
+- 95% CI (0.5731–0.6525) – The true accuracy likely lies between 57.31% and 65.25%.\ 
+- No Information Rate (0.6933) – Shows the proportion of the non-“positive” class (majority class), which makes up 69.33% of the data.\
+- P-Value \[Acc \> NIR\] (1.0000) – Indicates the model’s accuracy is not significantly better than simply guessing the majority class.\
+- Kappa (0.107) – Shows very weak agreement between predicted and actual classes beyond random chance.\
+- McNemar’s Test (p = 0.4702) – No significant difference between the types of misclassifications (false positives vs. false negatives).\
+- Sensitivity (0.4022) – The model correctly identified 40.22% of the positive class.\
+- Specificity (0.7067) – The model correctly identified 70.67% of the negative class.\
+- Pos Pred Value (Precision, 0.3776) – Of all cases predicted as positive, 37.76% were actually positive.\ - Neg Pred Value (0.7277) – Of all cases predicted as negative, 72.77% were actually negative.\
+- Prevalence (0.3067) – The positive class makes up 30.67% of the dataset.\
+- Detection Rate (0.1233) – Only 12.33% of all samples were correctly identified as belonging to the positive class.\
+- Detection Prevalence (0.3267) – About 32.67% of cases were predicted as positive, regardless of correctness.\ 
+- Balanced Accuracy (0.5545) – Averaging sensitivity and specificity, the model correctly identifies both classes only slightly better than random (55%).\
+- F1 Score (0.3895) – Shows the model’s balance between precision and recall is quite weak, meaning it struggles to identify positive cases accurately and consistently.\
+
+It is important to note that a full tree has a tendency to overfit the dataset and can therefore produce high accuracy. It is important to prune the true and compare performance metrics.\
+
+## Best Pruned Tree; Manual (For my own exploration and curiosity)
+
+```{r}
+cat("Full Tree cp table\n")
+print(full_tree$cptable, digits = 3)
+
+cp_min <- full_tree$cptable[which.min(full_tree$cptable[,"xerror"]), "CP"]
+tree_min  <- prune(full_tree, cp = cp_min)
+print(tree_min)
+
+rpart.plot(tree_min, type=2, extra=104, fallen.leaves=TRUE,
+           main = sprintf("Pruned (min xerror, cp=%.5f)", cp_min))
+
+
+pred_min <- predict(tree_min, testset, type = "class")
+cm_min <- caret::confusionMatrix(pred_min, factor(testset$Grad, levels = c(0,1)), positive = "0")
+cm_min
+
+
+```
+
+Comments about Best Pruned Tree by lowest xerror:\
+I wanted to see how this version of the best pruned tree compared to the best tree caret makes.
+
+```{r}
+myCtrl1 <- trainControl(method = "cv", number = 10)
+
+trainset$Grad <- as.factor(trainset$Grad)
+
+bp_tree <- train(Grad ~.,  data = trainset,
+								 method = "rpart",     
+								 trControl = myCtrl1,
+								 tuneGrid = NULL)
+
+cat("unweighted best pruned cptable\n")
+bp_tree$finalModel$cptable
+
+cat("Variable Importance\n")
+print(caret::varImp(bp_tree))
+
+cat("\nTREE DIAGRAM WITH NODE COUNTS\n")
+prp(bp_tree$finalModel, type = 1, extra = 1  , under = TRUE, digits=3)
+cat("\nTREE DIAGRAM SHOWING PROBABILTIES AND NODE PROPORTION\n")
+prp(bp_tree$finalModel, type = 1, extra = 104, under = TRUE, digits=3)
+
+ubp_predicted_class <- predict(bp_tree, testset, type="raw")
+ubp_CM <- caret::confusionMatrix(ubp_predicted_class,
+                                 as.factor(testset$Grad), positive = "0")
+cat("Confusion Matrix at Default Cutoff Value\n")
+ubp_CM
+
+ubp_F1 <- with(as.list(ubp_CM$byClass),
+				 (2*(`Pos Pred Value` * Sensitivity)) / (`Pos Pred Value` + Sensitivity))
+cat("F1 Score: ", ubp_F1, "\n")
+
+```
+Comments on best pruned tree:\
+For the best pruned tree HS_GPA and SAT were the variables with the most importance to the dependent variable.\
+
+**Note: the positive class was the 0 class**
+
+- Accuracy (0.7183) – 71.83% of predictions were correct.\
+
+- 95% CI (0.6805 – 0.7540) – The true accuracy likely lies between 68.05% and 75.40%.\
+
+- No Information Rate (0.6933) – Shows the proportion of the non-“positive” class (majority class), which makes up 69.33% of the data.\
+
+- P-Value (0.0989), The model’s accuracy is slightly higher but not statistically significant compared to simply guessing the majority class.\
+
+
+- Kappa (0.2317) – Shows weak agreement between predicted and actual classes beyond random chance.\
+
+- McNemar’s Test (p = 4.419e-12) – Indicates a significant difference between the types of misclassifications (false positives vs. false negatives).\
+
+- Sensitivity (0.2935) – The model correctly identified 29.35% of the positive class.\
+
+- Specificity (0.9062) – The model correctly identified 90.62% of the negative class.\
+
+- Pos Pred Value (Precision, 0.5806) – Of all cases predicted as positive, 58.06% were actually positive.\
+
+- Neg Pred Value (0.7436) – Of all cases predicted as negative, 74.36% were actually negative.\
+
+- Prevalence (0.3067) – The positive class makes up 30.67% of the dataset.\
+
+- Detection Rate (0.0900) – Only 9.00% of all samples were correctly identified as belonging to the positive class.\
+
+- Detection Prevalence (0.1550) – About 15.50% of cases were predicted as positive, regardless of correctness.\
+
+- Balanced Accuracy (0.5999) – Averaging sensitivity and specificity, the model correctly identifies both classes slightly better than random (60%).\
+
+- F1 Score (0.3899) – Shows the model’s balance between precision and recall is quite weak, meaning it struggles to identify positive cases accurately and consistently.\
+
+Compared to the full tree this model has a higher accuracy and performs better overall. However this model has low sensitivity meaning the model struggles to predict the positive class. 
+
+
+## Weighted Best Tree
+
+```{r}
+class_counts <- table(trainset$Grad)
+
+cat("Class Counts (n) for Admitted from the Training Dataset")
+class_counts
+
+cat("\nClass Total:", sum(class_counts), "\n")
+
+wts <- ifelse(trainset$Grad == 1,
+       (0.5 * sum(class_counts)) / class_counts[2],
+       (0.5 * sum(class_counts)) / class_counts[1])
+
+
+set.seed(1)
+w_bp_tree <- train(as.factor(Grad)~., data = trainset, method = "rpart", trControl = myCtrl1, tuneGrid = NULL, weights = wts)
+
+cat("Weighted Best Pruned Tree cp Table\n")
+w_bp_tree$finalModel$cptable
+
+cat("\nWeighted Variable Importance\n")
+print(caret::varImp(w_bp_tree))
+
+cat("\nTREE DIAGRAM WITH NODE COUNTS\n")
+prp(w_bp_tree$finalModel, type = 1, extra = 1  , under = TRUE, digits=3)
+cat("\nTREE DIAGRAM SHOWING PROBABILTIES AND NODE PROPORTION\n")
+prp(w_bp_tree$finalModel, type = 1, extra = 104, under = TRUE, digits=3)
+
+wb_predicted_class <- predict(w_bp_tree, testset, type = "raw")    
+wb_CM <- caret::confusionMatrix(wb_predicted_class, as.factor(testset$Grad), positive = "0")  
+cat("\nCONFUSION MATRIX AT DEFAULT CUTOFF VALUE\n")
+wb_CM
+
+wb_F1 <- with(as.list(wb_CM$byClass),
+				 (2*(`Pos Pred Value` * Sensitivity)) / (`Pos Pred Value` + Sensitivity))
+cat("F1 Score: ", wb_F1, "\n")
+
+
+
+
+```
+Comments on best weighted pruned tree:\
+For the best weighted pruned tree HS_GPA and SAT still remain the variables with the most importance to the dependent variable.\
+
+**Note: The positive class was the 0 class**
+
+- Accuracy (0.6267) – 62.67% of predictions were correct.\
+
+- 95% CI (0.5866 – 0.6655) – The true accuracy likely lies between 58.66% and 66.55%.\
+
+- No Information Rate (0.6933) – Shows the proportion of the non-“positive” class (majority class), which makes up 69.33% of the data.\
+
+- P-Value (0.9998) – The model’s accuracy is not significantly better than simply guessing the majority class.\
+
+- Kappa (0.2254) – Shows weak agreement between predicted and actual classes beyond random chance.\
+
+- McNemar’s Test (p = 6.139e-09) – Indicates a significant difference between the types of misclassifications (false positives vs. false negatives).\
+
+- Sensitivity (0.6304) – The model correctly identified 63.04% of the positive class.\
+
+- Specificity (0.6250) – The model correctly identified 62.50% of the negative class.\
+
+- Pos Pred Value (Precision, 0.4265) – Of all cases predicted as positive, 42.65% were actually positive.\
+
+- Neg Pred Value (0.7927) – Of all cases predicted as negative, 79.27% were actually negative.\
+
+- Prevalence (0.3067) – The positive class makes up 30.67% of the dataset.\
+
+- Detection Rate (0.1933) – 19.33% of all samples were correctly identified as belonging to the positive class.\
+
+- Detection Prevalence (0.4533) – About 45.33% of cases were predicted as positive, regardless of correctness.\
+
+- Balanced Accuracy (0.6277) – Averaging sensitivity and specificity, the model correctly identifies both classes about 62.8% of the time, showing modest overall balance.\
+
+- F1 Score (0.5088) – Shows the model’s balance between precision and recall is moderate, meaning it identifies positive cases somewhat consistently but still with room for improvement.\
+
+
+## Select Final Model
+
+```{r}
+extract_metrics <- function(cm, f1) {
+  c(Accuracy           = unname(cm$overall["Accuracy"]),
+    Kappa              = unname(cm$overall["Kappa"]),
+    Sensitivity        = unname(cm$byClass["Sensitivity"]),
+    Specificity        = unname(cm$byClass["Specificity"]),
+    `Pos Pred Value`   = unname(cm$byClass["Pos Pred Value"]),
+    Prevalence         = unname(cm$byClass["Prevalence"]),
+    `Detection Rate`   = unname(cm$byClass["Detection Rate"]),
+    `Balanced Accuracy`= unname(cm$byClass["Balanced Accuracy"]),
+    F1                 = f1)}
+
+metrics_table <- data.frame(
+  Full_Tree    = extract_metrics(uf_conf_matrix, uf_F1),
+  Unweighted_Pruned = extract_metrics(ubp_CM, ubp_F1),
+  Weighted_Pruned   = extract_metrics(wb_CM, wb_F1))
+
+metrics_table <- tibble::rownames_to_column(metrics_table, var = "Metric")
+knitr::kable(metrics_table, digits = 3, caption = "MODEL PERFORMANCE COMPARISON")
+```
+
+Model of selection is the **Weighted Pruned** Due to its balance of sensitivity and specificity along with having the highest balanced accuracy and F1 score among the models.\
+
+# Evaluation
+
+```{r}
+# convert the depvar back to numeric to plot
+testset$Grad <- as.numeric(as.character(testset$Grad))
+
+predicted_prob <-  predict(bp_tree, testset, type = "prob")    
+
+# gains table
+gains_table <- gains(testset$Grad, predicted_prob[,2])
+gains_table
+
+# cumulative gains chart
+plot(c(0, gains_table$cume.pct.of.total*sum(testset$Grad)) ~ c(0, gains_table$cume.obs), xlab = '# of cases', ylab = "Cumulative", type = "l", main="Cumulative Gains Chart")
+lines(c(0, sum(testset$Grad))~c(0, dim(testset)[1]), col="red", lty=2)
+
+#Decile-Wise Lift Chart
+barplot(gains_table$mean.resp/mean(testset$Grad), names.arg=gains_table$depth, 
+        xlab="Percentile", ylab="Gains", ylim=c(0,3), 
+				col="blue", main="Decile-Wise Lift Chart")
+abline(h=c(1),col="red")
+
+#ROC with AUC
+roc_object <- roc(testset$Grad, predicted_prob[,2])
+plot.roc(roc_object)
+auc(roc_object)
+```
+Comments on Evaluation:\
+The gains table shows how well the model ranks observations by predicted probability of the positive class. It shows that most of the predictive power is in the top of predicted probabilities. The Cumulative lift chart shows our model does perform better than random chance as the black line is above the red dashed line. The Decile Wise lift chart shows that the first decile is above 1 which shows the top segments of data contain proportionally more positive cases. The AUC value shows that the model has discrimination power. 
+
+
+# Deployment
+
+```{r}
+score_data_prob <- as.data.frame(predict(w_bp_tree, Graduate_data_score, type="prob"))
+
+scored_opt <- cbind(Graduate_data_score, score_data_prob)
+knitr::kable(scored_opt, align = "c")
+
+
+```
+Comments on Deployment:\
+The model on the scoring data ranked two of the three students likely to not complete college in four years. The main reason is that both of these students HS GPA was below 3.87 which in the model showed that these students likely would not complete college in four years. 
+
