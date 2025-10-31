@@ -1,0 +1,536 @@
+---
+title: "DAT-4253 LM 8 - Prediction; Multiple Regression"
+author: "Aaron Younger"
+date: "October 19, 2024"
+format:
+  html: 
+    code-fold: false
+    code-overflow: wrap
+execute:
+  warning: false
+  messages: false
+  echo: True
+  include: true
+toc: true
+editor: source
+---
+
+# Business Understanding
+
+This analysis examines the relationship between performance factors of a quarterback compared to the quarterbacks salary. The specific performance based factors used in this analysis are pass completion rate, touchdowns scored, and the quarterbacks age. The final part of the analysis identifies which players are potentially overpaid or underpaid based on the model’s predictions and provides recommendations for how the model can be applied and improved for future use. 
+
+# Data Understanding
+
+## Libraries
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(DataExplorer)
+library(ggplot2)
+library(caret)
+library(dlookr)
+library(e1071)
+library(psych)
+library(car)
+library(stargazer)
+library(tidyr)
+library(purrr)
+library(performance)
+library(Metrics)
+library(auditor)
+
+```
+
+## Load Dataset
+
+```{r}
+library(readxl)
+quarterback_data <- read_excel("jaggia_ba_2e_ch07_data.xlsx", 
+    sheet = "Quarterbacks")
+View(quarterback_data)
+
+quarterback_data %>% str()
+quarterback_data %>% plot_intro()
+quarterback_data %>% plot_missing()
+quarterback_data %>% head()
+quarterback_data %>% tail()
+
+
+```
+Comments on Dataset:\
+The Dataset has five variables, all of which are numeric. This dataset contains no missing values.\
+Dataset Variables include:\
+- Player: An ID identifier given for quarterbacks from all 32 teams in the NFL.\
+- Salary: Salary of associated quarterbacks, Salary is in millions (Dependent Variable).\
+- PC: Pass completion rate.\
+- TD: Amount of Touchdowns completed.\
+- Age: The age of the quarterback.
+
+## EDA
+
+```{r}
+
+quarterback_data %>% plot_density()
+
+## Look into skewness
+skewness(quarterback_data$Salary) # Right Skewed
+skewness(quarterback_data$Age) # Right Skewed
+skewness(quarterback_data$TD) # Barely left skewed
+skewness(quarterback_data$PC) # Barely left skewed
+
+## Look for outliers
+diagnose_outlier(quarterback_data)
+range(quarterback_data$Salary)
+range(quarterback_data$TD)
+range(quarterback_data$Age)
+range(quarterback_data$PC)
+
+
+## Data deep dive
+psych::describe(quarterback_data) ## Low Kurtosis values support outliers unlikely 
+
+```
+Comments on EDA:\
+Age and Salary are right skewed, Touchdown and Pass completion are slightly negatively skewed but are fine as is. Taking log of Age and/or Salary should be considered for modeling. There are no outliers in this dataset which is supported by the variables low kurtosis values.\
+
+
+### Relationship of Numeric Values
+
+```{r}
+
+# Look at relationship between variables and dependent variable.
+## Touchdown and Salary
+
+ggplot(data=quarterback_data, aes(x= TD, y = Salary)) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", color = "red", se=FALSE)+
+  labs(Title = "Relationship between Touchdowns and Salary",
+       subitile = "Expected relationship: Positive",
+       x = "Touchdowns",
+       y = "Salary")+
+  theme_minimal() ## Moderately Positively Correlated
+
+## Age and Salary
+
+ggplot(data=quarterback_data, aes(x= Age, y = Salary)) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", color = "red", se=FALSE)+
+  labs(Title = "Relationship between Age and Salary",
+       subitile = "Expected relationship: Positive",
+       x = "Age",
+       y = "Salary")+
+  theme_minimal() ## Weakly Positively Correlated
+
+## Pass Completion and Salary
+
+ggplot(data=quarterback_data, aes(x= PC, y = Salary)) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", color = "red", se=FALSE)+
+  labs(Title = "Relationship between Touchdowns and Salary",
+       subitile = "Expected relationship: Positive",
+       x = "Pass Completion",
+       y = "Salary")+
+  theme_minimal() ## Weakly Positively Correlated
+
+
+## Look at relationship between touchdown and pass completion because these seem like the most correlated variables from the predictors
+
+ggplot(data = quarterback_data, aes(x = PC, y = TD)) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(title = "Relationship between Pass Completion and Touchdowns",
+       subtitle = "Expected relationship: Positive",
+       x = "Pass Completion Rate",
+       y = "Touchdowns") +
+  theme_minimal()
+
+
+
+```
+Comments on Variable Relationships:\
+All variables have a positive linear relationship to the dependent variable, salary, with touchdown seeming to have the strongest positive linear relationship with salary. It is also important to note that Pass completion and touchdown have a very strong positive linear relationship. This could lead to multicollinearity due to strong correlation. 
+
+
+```{r}
+
+quarterback_data %>% plot_qq()
+
+```
+Comments on QQ Plot:\
+The Q-Q plots indicate that most variables are approximately normally distributed with the exception of Age and Salary. Age and Salary as seen in earlier EDA are right skewed which is supported by the Q-Q plots. It is supported since most data points cluster near the bottom and middle of the Q-Q plot. 
+
+
+
+
+
+```{r}
+DataExplorer::plot_correlation(quarterback_data)
+
+```
+Comments on Correlation:\
+The Correlation matrix supports what was seen in earlier EDA. PC, TD, and Age all have a positive correlation with Salary. Again important to note that TD and PC have a very strong correlation which is something to remember when checking for multicollinearity. 
+
+
+# Data Preparation
+
+## Partition Data
+
+```{r}
+set.seed(1)
+my_index <- createDataPartition(quarterback_data$Salary, p=0.75, list = FALSE)
+trainset <- quarterback_data[my_index,]
+testset <- quarterback_data[-my_index,]
+
+mean(quarterback_data$Salary)
+mean(trainset$Salary)
+mean(testset$Salary)
+
+
+```
+Comments on Data Partition:\
+This dataset was partitioned into a 75/25 split, with 75% of the data being used for the training dataset and 25% of the data being used for the test dataset. Since salary is the dependent variable, the mean of salary was taken to see if the split maintained a consistent distribution of the dependent variable. Since the means of salary was close across the datasets, it is acceptable to proceed into modeling. Set.seed was used to maintain reproducible results. \
+
+
+# Modeling
+
+## Create Models
+
+```{r, echo=TRUE, results='hide'}
+# Outputs of models purposefully hidden, summary of models show in next code chunk.
+## Log Salary and Age
+set.seed(1)
+
+myctrl <- trainControl(method = "CV", number = 10)
+
+# No Variable Transformations
+raw_model <- train(Salary ~ PC + TD + Age,
+                   data = trainset,
+                   method = "lm",
+                   trControl = myctrl
+)
+summary(raw_model)
+
+## Log Salary
+logs_model <- train(log(Salary) ~ PC + TD + Age,
+                    data = trainset,
+                    method = "lm",
+                    trControl = myctrl)
+summary(logs_model)
+
+## Log Age
+
+loga_model <- train(Salary ~ PC + TD + log(Age),
+                    data = trainset,
+                    method = "lm",
+                    trControl = myctrl)
+summary(loga_model)
+
+## Log Both
+
+logb_model <- train(log(Salary) ~ PC + TD + log(Age),
+                    data = trainset,
+                    method = "lm",
+                    trControl = myctrl)
+summary(logb_model)
+
+
+
+```
+Comments on Creating Models:\
+Four regression models were created. The first regression model used original, untransformed variables. The second regression model took the log of salary. The third regression model used log of age. Finally, the fourth regression model used both log of salary and log of age. Creating multiple models allowed for evaluation of which specification provided the best statistical fit and interpretability.\ 
+
+## Compare Models
+
+```{r}
+
+model1 <- raw_model$finalModel
+model2 <- logs_model$finalModel
+model3 <- loga_model$finalModel
+model4 <- logb_model$finalModel
+
+stargazer(model1, model2, model3, model4,
+          type = "text",
+          title = "Comparison of Regression Models",
+          column.labels = c("Raw", "Log Salary", "Log Age", "Log Both"),
+          dep.var.labels = "Salary (Dependent Variable)",
+          covariate.labels = c("Pass Completion", "Touchdowns", "Age"),
+          no.space = TRUE)
+
+```
+
+Comments on Comparison of Models:\
+Four regression models were tested, each varying in whether the logarithm of Salary and/or Age was applied. Among these, the model using only the log of Age achieved the best statistical fit based on adjusted R^2 and F-statistic values. However, the model using only the log of Salary was selected. The log-salary transformation effectively addresses the right-skewed distribution of salary while allowing coefficients to be interpreted as percentage changes in salary, making the results more meaningful in practical interpretations. The log-salary model is also statistically signficant.\
+
+## Model Interpretation Assuming a 10% level of significance
+
+### Goodness of Fit
+
+```{r}
+logs_model_summary <- summary(logs_model$finalModel)
+logs_model_summary
+
+```
+
+Comments on Goodness of Fit:\
+
+Goodness of fit metric interpretation:\
+The p-value on the F-statistic is \<.1 showing the model is significant.\
+The model explains `r round(logs_model_summary$r.squared, 3)*100`% of the variation in Spend.\
+The standard error of the estimate is \$`r round(logs_model_summary$sigma, 3)`. This means that on average, the predicted log-salary values differ from the actual log-salary values by about 0.837 log units. However converting back into real salary terms, e^-0.837 and e^0.837, actual salaries are typically between 0.43 and 2.31 times the predicted salary. Further converting this into a percentage, 2.31 - 1, actual salaries are roughly + or - 130% from predicted values on average. This shows moderate level of uncertainty when predicting but can be expected due to the spread of salary.\
+
+Coefficient Significance Interpretation:\
+One Variable is statistically significant, and that is the TD (touchdown) variable.\
+
+Coefficient Value Interpretation:\
+- PC: For every one unit increase there is on average a `r round(logs_model_summary$coefficients["PC", 1], 3)`% decrease in salary ceterus paribus.\
+- TD: For every one unit increase in touchdown, there is on average a `r round(logs_model_summary$coefficients["TD", 1], 3)`% increase in salary, ceterus paribus.\
+- Age: For every one unit increase in Age, there is on average a `r round(logs_model_summary$coefficients["Age", 1], 3)`% increase in salary, ceterus paribus.\
+
+### Multicollinearity
+
+```{r}
+check_collinearity(logs_model$finalModel)
+
+```
+Comments on Multicollinearity:\
+- Age: Age shows low correlation with a VIF value of 1.33. The Tolerance value is 0.75 meaning age has low overlap with other variables in the dataset.\
+- TD: TD has moderate correlation with a VIF value of 4.76. The Tolerance value is 0.21 showing high overlap with other variables in the dataset. This is most likely with PC, as seen in EDA both showed strong correlation between each other.\
+- PC: PC has moderate correlation with a VIF value of 5.39. The Tolerance value is 0.19 showing high overlap with other variables in the dataset. This is most likely with TD, as seen in EDA both showed strong correlation between each other.\
+
+Although PC and TD have a moderately high VIF value both values should be kept. They are both different quarterback performance metrics and both metrics involve passing in them which explains some of the overlap.\
+
+### Residual Analysis
+
+#### Create Dataset for Residual analysis
+
+```{r}
+
+residual_data <- trainset %>% 
+  mutate(log_salary = log(Salary)) %>% 
+  cbind(fitted = logs_model$finalModel$fitted.values, residuals = logs_model$finalModel$residuals)
+View(residual_data)
+
+```
+Comments on dataset creation for residual analysis:\
+To perform residual analysis, both the fitted values and residuals from the model were stored in a new dataset. Since the regression model was trained on the logarithm of Salary, the log of Salary variable was also added to the dataset to ensure consistency between the model scale and the residual diagnostics. 
+
+
+
+#### Fitted vs Actual (looking for linear relationship)
+
+```{r}
+
+ggplot(residual_data, aes(x = log_salary, y = fitted)) +
+  geom_point(color = "blue")+
+  geom_smooth(method = "lm", color = "red", se = TRUE)+
+  labs(title = "Fitted vs Actual")
+
+```
+Comments on fitted vs actual plot:\
+This graph compares predicted log-salary values to actual log-salary values to see how closely the model can replicate the observed data. The points follow an upward linear trend with some scatter around the line. This shows the model captures the main relationship between predictors and salary reasonbly well.\
+
+
+#### Residual vs Fitted (looking for no change in variability)
+
+```{r}
+
+ggplot(residual_data, aes(x = fitted, y = residuals)) +
+  geom_point(color = "maroon")+
+  geom_smooth(method = "lm", color = "red", se=TRUE)+
+  labs(title = "Residuals vs Fitted")
+```
+Comments on Residual vs Fitted:\
+This graph shows residuals plotted against fitted values to test for linearity. The residuals in this graph are randomly scattered around the zero line without strong patterns, showing the model satisfies linearity assumption.\
+
+
+
+#### Residuals vs Predictor (want linear pattern)
+
+```{r}
+
+ggplot(residual_data, aes(x = TD, y = residuals))+
+  geom_point(color="magenta") +
+  geom_hline(yintercept = 0)+
+  labs(title = "Residuals vs TD (Signficant Predictor)")
+```
+Comments on Residuals vs Predictor:\
+Since there was only one significant predictor variable in my model, TD, there was only one residual vs predictor graph made. This graph checks to see whether residuals have any visible trend when plotted against the TD variable. The residuals are randomly dispersed around around the zero line, showing that the relationship between TD and log-salary is captured well. 
+
+#### Fitted vs Predictor (want a linear pattern)
+
+```{r}
+
+ggplot(residual_data, aes(x = TD, y = fitted)) +
+  geom_point(color="cyan")+
+  geom_smooth(method = "lm", color = "red", se = TRUE)+
+  labs(title = "Fitted vs TD (Significant Predictor)")
+```
+Comments on Fitted vs Predictor:\
+This plot displays the fitted log-salary values against the number of touchdowns variable to show the relationship between the two. The graph shows an upward linear trend which supports a positive relationship between the two variables. Confirming that a higher touchdown count leads to a higher predicted salary. 
+
+
+
+#### QQ-Plot (want dots along the line - indicates normal distribution)
+
+```{r}
+res <- resid(logs_model$finalModel)
+qqnorm(res)
+qqline(res)
+
+```
+Comments on QQ-Plot:\
+The Q-Q plot compares distribution of standardized residuals to a normal distribution line. The points closely follow the normal distribution line showing an approximate normal distributions, supporting normality. 
+
+
+#### Histogram of Residuals (want normal distribution)
+
+```{r}
+
+# Distribution of residuals
+hist(res)
+
+# Distribution of fitted values
+hist(residual_data$fitted)
+
+skewness(res)
+skewness(residual_data$fitted)
+
+
+
+
+```
+Comments on Histograms (residuals and fitted Values):\
+The histograms display the distributions of residuals and fitted values to show any potential spread. Although both histograms are not normally distributed, there is no severe skewness.\
+
+
+## Does Model Meet OLS Assumptions
+Comments on Model meeting OLS Assumptions:\
+Based on the residual plots and model statistics all major OLS assumptions are satisfied.\
+1. Linearity - The Model is linear because the coefficients enter the model linearly. Taking log of salary does not violage this assumption.\
+2. Random Sampling - This dataset takes the entire population of quarterbacks so sampling was not necessarily needed.\
+3. No perfect Multicollinearity - Predictors are not exact linear combinations of each other, only moderate correlation exists between PC and TD.\
+4. Zero Conditional Mean of Erros - Residuals are randomly scattered around the zero line in residuals vs fitted plot, no obvious trends so no sign of systematic error.\
+5. Homescedasticity - The Variance of residuals is constant across all fitted values.\
+6. No Serial Correlation - Non-Applicable, this data is cross-sectional not time-series.\
+7. Exogeneity - The random residual pattern against TD and fitted values appear unrelated to errors.\
+8. Normality of Errors - The Q-Q plot shows slight deviation at th etails, and the histogram is not perfrectly symmetric. This shows slight non-normality, but is acceptable. \
+
+# Evaluation
+
+```{r}
+predict_model <- predict(logs_model, newdata=testset)
+model_predict <- cbind(testset, predict_model) %>% 
+  mutate(log_salary = log(Salary))
+
+View(model_predict)
+
+
+# Fitted vs Actual
+ggplot(model_predict, aes(x = log_salary, y = predict_model)) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(title = "Test: Scored Fitted vs Actual")
+
+```
+
+## Evaluation Metrics
+
+```{r}
+
+# Make sure the values are numeric in vectors not array (Metrics package is quirky that way)
+actual <- as.numeric(model_predict$log_salary)
+pred   <- as.numeric(model_predict$predict_model)
+
+RMSE <- formattable::comma(round(Metrics::rmse(actual, pred), 2),
+													 digits = 2, format = "f", big.mark = ",")
+
+MAE <- formattable::comma(round(Metrics::mae(actual, pred), 2),
+													digits = 2, format = "f", big.mark = ",")
+
+MAD <- formattable::comma(round(mad(actual - pred), 2),
+													digits = 2, format = "f", big.mark = ",")
+
+MAPE <- formattable::percent(round(Metrics::mape(actual, pred), 5), 
+													digits = 2)
+
+cat("RMSE:", RMSE,"\n")
+cat("MAE :", MAE,"\n")
+cat("MAD :", MAD,"\n")
+cat("MAPE:", round(MAPE*100,2),"%\n") ## Refresh Memory on what these mean
+
+
+
+```
+Comments on Evaluation Metrics:\
+Since the model predicts log of salary, the above error metrics represent proportional rather than absolute deviations.\
+- RMSE (0.33): The Model's predictions typically deviate from actual salaries by 0.33 log unites or +/- 39 % in real terms. e^0.33 = 1.39 - 1 = 0.39 or 39%.\
+- MAE (0.26): The Average absolute prediction error is 0.26 log units, meaning predicted salaries are about 30% off actual values on average.\
+- MAD (0.31): The average deviation of residuals from the fitted line is 0.31, showing a moderate level of prediction error.\
+- MAPE (17.95%): On average, the model's salary predictions are within about 18% of the actual values.\
+
+
+## Evaluation REC
+
+```{r}
+## Add log of salary to testset
+
+testset <- testset %>% 
+  mutate(log_salary = log(Salary))
+View(testset)
+
+
+lm_audit <- audit(logs_model, data = testset, y = testset$log_salary)
+mr_lm <- model_residual(lm_audit)
+plot_rec(mr_lm)
+score_rec(lm_audit)
+
+
+
+```
+Comments on REC Value:\
+The REC Area is relatively low at 0.20, the closer the value is to 1 the better. I think this number is acceptable however due to the smaller dataset and the range of quarterback salaries.\
+
+
+
+# Deployment
+
+## Predict Players Based off Model
+
+```{r}
+
+model_all <- train(log(Salary) ~ PC + TD + Age,
+                    data = quarterback_data,
+                    method = "lm",
+                    trControl = myctrl)
+summary(model_all)
+
+test <- quarterback_data %>% 
+  mutate(resid = residuals(model_all),
+         predict = fitted(model_all),
+         log_salary = log(Salary))
+
+test2_real <- test %>% 
+  mutate(actual_salary = exp(log_salary),
+         predicted_salary = exp(predict),
+         actual_resid = actual_salary - predicted_salary)
+
+
+test2 <- dplyr::filter(test2_real, Player %in% c(8, 16))
+test2 %>% dplyr::select(Player, actual_salary, actual_resid, predicted_salary)
+
+
+```
+Comments on Pay based off the Model:\
+As part of this analysis the general manager wants to know if based on the influences that affect salary if players 8 and 16 are being over or underpayed.\
+- Player 8: Based on the models predicted salary, player 8 is being overpayed by about 3.7 million dollars with his predicted salary being about 9.2 million dollars but his actual salary being about 12.9 million dollars.\
+- Player 16: Based on the models predicted salary, player 16 is being underpayed by about 2.7 million dollars with his predicted salary being about 10.7 million dollars but his acutal salary being about 8 million dollars.\
+
+## Recommendations to the General Manager
+The linear regression model is a useful tool for evaluating performance metrics relating to salary. It has relatively strong accuracy and moderately low prediction error. However, this model should not be the only thing used in decision making. The model accounted for low variability in the dataset. The dataset this model uses also does not account for all factor's of quarterback salary such as leadership qualities and team fit.\
+
+
+
+
+
