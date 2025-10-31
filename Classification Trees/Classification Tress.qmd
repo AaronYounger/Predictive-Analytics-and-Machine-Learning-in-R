@@ -456,3 +456,4 @@ knitr::kable(scored_opt, align = "c")
 Comments on Deployment:\
 The model on the scoring data ranked two of the three students likely to not complete college in four years. The main reason is that both of these students HS GPA was below 3.87 which in the model showed that these students likely would not complete college in four years. 
 
+
