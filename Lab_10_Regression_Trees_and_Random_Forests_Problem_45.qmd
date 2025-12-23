@@ -1,0 +1,528 @@
+---
+title: "Lab 10: Regression Tress, Random Forest (Problem 45)"
+author: "Aaron Younger"
+format:
+  html: 
+    code-fold: false
+    code-overflow: wrap
+execute:
+  warning: false
+  messages: false
+  echo: true
+  include: true
+toc: false
+toc-location: left
+number-sections: false
+editor: source
+---
+
+# Business Understanding
+
+Merrick Stevens is a sports analyst working for ACE Sports Management, a sports agency that represents over 200 athletes. He is interested in understanding the relationship between an NBA player’s salary and his physicality and performance statistics.
+
+
+# Data Understanding
+
+## R Version
+
+```{r}
+options(scipen = 999)
+suppressWarnings(RNGversion("3.5.3"))
+
+```
+
+
+## Libraries
+
+```{r}
+library(janitor)
+library(DataExplorer)
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(e1071)
+library(dlookr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+
+```
+
+## Import Modeling and Score Dataset
+
+```{r}
+nba_data <- read_excel("jaggia_ba_2e_ch13_data.xlsx", 
+    sheet = "NBA_Data")
+nba_data <- clean_names(nba_data)
+View(nba_data)
+
+nba_score <- read_excel("jaggia_ba_2e_ch13_data.xlsx", 
+    sheet = "NBA_Score")
+nba_score <- clean_names(nba_score)
+
+
+```
+Data Set Key:\
+- player_number: Represents the identification number assigned to each NBA player.\
+- salary (Dependent Variable) : Indicates the annual salary earned by the NBA player (in dollars).\
+- age: Shows the player’s age in years.\
+- height: Represents the player’s height (typically measured in inches).\
+- weight: Represents the player’s weight (typically measured in pounds).\
+- games_played: The total number of games the player has participated in during the season.\
+- games_started: The total number of games in which the player was part of the starting lineup.\
+- minutes_per_game: The average number of minutes the player spends on the court per game.\
+- FG_made: Total number of field goals successfully made by the player.\
+- FG_attempted: Total number of field goal attempts taken by the player.\
+- FG_percent: Field goal shooting percentage (FG_made ÷ FG_attempted × 100).\
+- 3P_made: Total number of three-point shots successfully made by the player.\
+- 3P_attempted: Total number of three-point shot attempts taken by the player.\
+- 3P_percent: Three-point shooting percentage (3P_made ÷ 3P_attempted × 100).\
+- FT_made: Total number of free throws successfully made by the player.\
+- FT_attempted: Total number of free throw attempts taken by the player.\
+- FT_percent: Free throw shooting percentage (FT_made ÷ FT_attempted × 100).\
+- offensive_rebounds: The total number of rebounds collected on the offensive side of the court.\
+- defensive_rebounds: The total number of rebounds collected on the defensive side of the court.\
+- assists: The number of times a player passes the ball leading directly to a made basket.\
+- blocks: The total number of opponent shots blocked by the player.\
+- steals: The total number of times the player takes the ball away from an opponent.\
+- personal_fouls: The total number of personal fouls committed by the player.\
+- turnovers: The total number of times the player loses possession of the ball to the opposing team.\
+- points: The total number of points scored by the player throughout the season.\
+
+
+## Dataset Exploration
+
+```{r}
+nba_data %>% head()
+nba_data %>% tail()
+nba_data %>% plot_intro()
+nba_data %>% glimpse()
+nba_data %>% plot_missing()
+nba_data %>% str()
+nba_data %>% ncol()
+nba_data %>% nrow()
+
+
+```
+Comments on Dataset Exploration:\
+
+This dataset is made of only numeric variables, contains no categorical variables. This dataset also contains no missing values.\
+
+## Variable EDA
+
+```{r}
+nba_data %>% plot_density()
+
+diagnose_outlier(nba_data) ## Although there are outlier counts in almost all variables it would not be ideal to remove people that are outliers in categories because that could determine salary, ex if a person is an outlier because he has more blocks but block influence salary that player would earn more salary. 
+
+nba_data %>% plot_scatterplot(by="salary")
+
+skewness_values <- sapply(nba_data, skewness, na.rm = TRUE)
+skew_table <- data.frame(
+  Variable = names(skewness_values),
+  Skewness = round(skewness_values, 3)
+)
+print(skew_table) ## Prints skew values of all numeric variables
+
+```
+
+## Simple Random Forest To Find Variables with low importance
+
+```{r}
+rf_model <- randomForest(salary ~ ., data = nba_data, importance = TRUE)
+imp <- importance(rf_model)
+
+imp_sorted <- imp[order(imp[, "%IncMSE"]), , drop = FALSE]
+
+# if you want both columns
+imp_table <- data.frame(
+  Variable       = rownames(imp_sorted),
+  `%IncMSE`      = imp_sorted[, "%IncMSE"],
+  IncNodePurity  = imp_sorted[, "IncNodePurity"],
+  row.names = NULL,
+  check.names = FALSE
+)
+print(imp_table)
+
+
+```
+Comments on Simple Random Forest:\
+The variable importance feature of the random forest can help initially identify variables that are not important when compared to salary, the dependent variable. This helps get insight into potential variables to drop due to their lack of importance. Any variable that has a value of <5 for %IncMSE can be safely dropped.\
+
+
+## Q-Q Plots
+
+```{r}
+nba_data %>% plot_qq()
+
+```
+
+## Correlation Matrix
+
+```{r}
+nba_data %>% plot_correlation()
+
+```
+
+# Data Prepartion
+
+## Drop Player Number as a predictor
+
+```{r}
+nba_data <- nba_data %>% 
+  select(-player_number)
+
+
+```
+
+## Partition
+
+```{r}
+myindex <- createDataPartition(nba_data$salary, p=0.7, list = FALSE)
+trainSet <- nba_data[myindex,]
+testSet <- nba_data[-myindex,]
+
+cat("Mean of Dependent Varaible \n")
+mean(nba_data$salary)
+cat("Mean of trainset dependent variable \n")
+mean(trainSet$salary)
+cat("Mean of testset dependent variable \n")
+mean(testSet$salary)
+
+
+
+
+```
+Comments on Data Partitioning:\
+The modeling dataset was partitioned into a 70/30 split, 70% of the data will be used to train the model and 30% of the dataset will be used to test the model. The means of salary for the train and test dataset were both close which means both have similar distributions of the dependent variable.\
+
+# Modeling (Rpart)
+
+## Cross Validation
+
+```{r}
+myCtrl <- trainControl(method = "cv", number = 10)
+
+```
+
+## Default Tree (Rpart)
+
+```{r}
+set.seed(1)
+default_tree <- rpart(salary ~., data = nba_data, method = "anova")
+rpart.plot(default_tree, type = 2, extra = 101, under = TRUE, fallen.leaves = TRUE)
+
+
+
+```
+Answer to Question 45 Part A:\
+A) What are the predictor variable and split value for the first split of the default regression tree?\
+
+The Predictor Variable for the first split is games started. The split values are for people that have less than 152 games started their salary is 2,100,000 whereas people with more than 152 games started their salary is 8,500,000.\
+
+## Full Tree (Rpart)
+
+```{r}
+set.seed(1)
+full_tree <- rpart(salary ~., data = nba_data, control = rpart.control(cp = 0, minsplit = 2, minbucket = 1, maxdepth = 30, xval = 10))
+
+#xval = 10 is cross fold validation of 10, this is how to do it using rpart, used rpart to get correct values in the cp table
+
+head(full_tree$cptable)
+
+
+## Where to Find Answers to Part B
+
+min_error <- full_tree$cptable[which.min(full_tree$cptable[,"xerror"]),]
+min_error
+
+## Find number of leaf nodes in the minimum error tree
+num_leaves <- min_error["nsplit"]
+cat("Number of Leaf Nodes in the Minimum Tree: ")
+print(num_leaves)
+
+
+
+
+
+```
+Answer to Question 45 Part B:\
+B) Build a full-grown tree. Which cp value is associated with the lowest cross-validation error? How many leaf nodes are in the minimum-error tree?\
+
+The CP value associated with the lowest cross-validation error is 0.01786872. There are seven leaf nodes in the minimum-error tree.\
+
+## Best Pruned Tree
+
+```{r}
+cpt <- full_tree$cptable
+
+imin  <- which.min(cpt[,"xerror"]) ## Grabs the row that the minimum error is on and defines it with a variable
+xerr_min  <- cpt[imin,"xerror"] ## Gets the xerror
+xstd_min  <- cpt[imin,"xstd"] ## Gets the xstd 
+threshold <- xerr_min + xstd_min ## Creates the xerror threshold for best pruned tree.
+threshold ## lowest amount of splits while staying below threshold xerror value
+
+within_threshold <- which(cpt[,"xerror"] <= threshold)
+
+best_pruned_index <- within_threshold[which.min(cpt[within_threshold, "nsplit"])]
+
+best_pruned_cp <- cpt[best_pruned_index, "CP"]
+best_pruned_xerror <- cpt[best_pruned_index, "xerror"]
+best_pruned_nsplits <- cpt[best_pruned_index, "nsplit"]
+
+cat("Best-Pruned Tree (1-SE Rule)\n")
+cat("CP value:", best_pruned_cp, "\n")
+cat("Cross-validation error:", best_pruned_xerror, "\n")
+cat("Number of splits:", best_pruned_nsplits, "\n")
+
+
+
+```
+Answer to Question 45 Part C:\
+C) Is there a simpler tree with a cross-validation error that is within one standard error of the minimum error?
+If there is, then which cp value is associated with the best-pruned tree?\
+
+Yes, there is a simpler tree with a cross-validation error that is within one standard error of the minimum error. This tree has a cp value of 0.03326144.\
+
+## Best Tree
+
+```{r}
+best_pruned_tree <- prune(full_tree, cp=0.03326144)
+  
+```
+
+### Variable Importance
+
+```{r}
+
+caret::varImp(best_pruned_tree)
+```
+
+
+### Show Best Pruned Tree
+
+```{r}
+rpart.plot(best_pruned_tree, type = 2, extra = 101, under = TRUE, fallen.leaves = TRUE)
+
+cat("Number of Leaf Nodes in the Default Tree: ")
+sum(best_pruned_tree$frame$var == "<leaf>")
+
+```
+
+Answer to Question 45 Part D:\
+
+D) Prune the full tree to the best-pruned tree or the minimum-error tree if the answer to part (c) is “No.”
+Display the tree. What are the rules that can be derived from the pruned tree?\
+
+From the best pruned tree, it can be derived that games started, ft made, age, and ft attempted are important predictor variables.\
+
+- Path 1: Players who started fewer than 152 games have an average predicted salary of about $2.1 million.\
+- Path 2: Players who started 152 or more games, made fewer than 3.4 free throws, and are aged 34 or older have an average salary of about $3.5 million.\
+- Path 3: Players who started 152 or more games, made fewer than 3.4 free throws, and are younger than 34 have an average salary of about $7.8 million.\
+- Path 4: Players who started 152 or more games, made at least 3.4 free throws, attempted fewer than 6.7 free throws, and are aged 33 or older have an average salary of about $4.1 million.\
+- Path 5: Players who started 152 or more games, made at least 3.4 free throws, attempted fewer than 6.7 free throws, and are younger than 33 have an average salary of about $12 million.\
+- Path 6: Players who started 152 or more games, made at least 3.4 free throws, and attempted 6.7 or more free throws have the highest predicted salary of about $20 million.\
+
+# Evaluation (Rpart)
+
+## Evaluation Metrics
+
+```{r}
+predict_bpt <- predict(best_pruned_tree, testSet)
+bpt_metrics <- round(forecast::accuracy(predict_bpt, testSet$salary),2)
+
+## For inline code
+ME_value   <- bpt_metrics["Test set", "ME"]
+RMSE_value <- bpt_metrics["Test set", "RMSE"]
+MAE_value  <- bpt_metrics["Test set", "MAE"]
+MPE_value  <- bpt_metrics["Test set", "MPE"]
+MAPE_value <- bpt_metrics["Test set", "MAPE"]
+
+rownames(bpt_metrics) <- "Rpart Regression Tree"
+print(bpt_metrics)
+
+```
+Answer to Question 45 Part E:\
+E. What are the ME, RMSE, MAE, MPE, and MAPE of the pruned tree on the validation data?\
+
+- **ME Value:** 'r ME_value'.\
+- **RMSE Value:** 'r RMSE_value'.\
+- **MAE Value:** 'r MAE_value'.\
+- **MPE Value:** 'r MPE_value'%.\
+- **MAPE Value:** 'r MAPE_value'%.\
+
+Measures of Accuracy:\
+- RMSE (Root Mean Square Error = 894.68) and MAE (Mean Absolute Error = 713.39) indicate that on average, the pruned tree’s salary predictions deviate by roughly 700–900 from the true values.\
+- MAPE (Mean Absolute Percentage Error = 34.74%) means predictions are off by about 35% on average relative to the actual salary level.\
+- Overall, the model shows moderate prediction accuracy, capturing general salary trends but still leaving room for improvement in precision.\
+
+Measures of Bias:\
+- ME (Mean Error = -1.35) is extremely close to zero, showing the model is essentially unbiased — there is no meaningful tendency to systematically over- or under-predict salary.\
+- MPE (Mean Percentage Error = -14.75%) is slightly negative, indicating a mild tendency to under-predict salaries on average, but the bias is not large relative to the scale of the values.\
+
+
+
+# Score (Rpart)
+
+```{r}
+rpart_score <- predict(best_pruned_tree, nba_score)
+rpart_pip <- cbind(nba_score, rpart_score)
+rpart_pip
+
+
+```
+Answer to Question 45 Part F:\
+F) Score the three NBA players Merrick is trying to sign as ACE Sports Management clients in the NBA_Score worksheet using the pruned tree.
+What is the average predicted salary of the three players?\
+
+- Player 1: The Average salary for Player 1 was 3,454,649.\
+- Player 2: The Average salary for Player 2 was 13,977,446.\
+- Player 3: The Average salary for Player 3 is 7,843,275.\
+
+
+# Modeling (Caret)
+
+## Best Tree (Caret)
+
+```{r}
+caret_bp <- train(salary~., data = trainSet,
+                  method = "rpart",
+                  trControl = myCtrl,
+                  tuneLength =25,
+                  metric = "RMSE",
+                  control = rpart::rpart.control(minsplit = 2, minbucket = 1, cp = 0))
+
+caret_bp$resample
+
+```
+
+### CP Values
+
+```{r}
+caret_bp$results
+cat("\nBest Tuned cp Value: ", caret_bp$bestTune$cp)
+
+
+```
+
+### Variable Importance
+
+```{r}
+caret::varImp(caret_bp)
+
+```
+
+
+### Show Best Tree (Caret)
+
+```{r}
+prp(caret_bp$finalModel, type = 2, extra = 1, under = TRUE, digits = 3, fallen.leaves = TRUE)
+cat("Number of Leaf Nodes in the Default Tree: ")
+sum(caret_bp$finalModel$frame$var == "<leaf>")
+
+```
+Comments on Best Tree (Caret):\
+The CP value for Caret's best tree is lower than rparts best pruned tree, so caret's best tree will have more splits and thus more leaf nodes. Caret's best tree has 12 leaf nodes whereas rpart's best tree has 6 leaf nodes.  The Variables that the models deem important are also different. Caret's top three most important variables are age, defensive rebounds, and fg attempted whereas rpart's top three most important variables are games started, games played, and minutes per game. Due to the increase in splits there are more paths in caret's model all prompted by different predictor variables. For example both models top average salary is 20e+6 however the path of variables to get to that average salary is different.\
+For Rpart's model players who started 152 or more games, made at least 3.4 free throws, and attempted 6.7 or more free throws will have the average salary of about $20 million.\
+For Caret's model players who started at least 185 games, made at least 2.85 free throws, are 33 years of age or older, weigh 233 pounds or more, and block at least 2.25 shots per game have an average salary of about $20 million.\
+
+Evaluation metrics will be used to see if Caret's model performs better than rpart's model. 
+
+# Evaluation (caret)
+
+```{r}
+cbp_predict <- predict(caret_bp, testSet)
+caret_bp_metrics <- round(forecast::accuracy(cbp_predict, testSet$salary),2)
+rownames(caret_bp_metrics) <- "Caret Regression Tree"
+print(caret_bp_metrics)
+
+rbind(caret_bp_metrics, bpt_metrics)
+
+```
+Comments Comparing Evaluation across both regression trees:\
+The Rpart Regression Tree performs better than the Caret Regression Tree, due to its lower RMSE (3,372,027 vs. 4,283,480) and MAE (2,432,908 vs. 2,765,978), meaning its predictions are closer to the true salary values on average. Additionally, the Rpart model has smaller percentage errors suggesting it is more accurate and less biased.\
+
+# Score (Caret)
+```{r}
+caret_score <- predict(caret_bp, nba_score)
+rf_pip <- cbind(nba_score, caret_score)
+rf_pip
+```
+
+
+
+# Data Partition (Random Forest)
+
+```{r}
+p <- ncol(trainSet)-1
+
+mtry_center <- max(1, round(p/3))
+mtry_grid <- data.frame(mtry = sort(unique(pmax(1, c(mtry_center-1, mtry_center, mtry_center+1, 2, p)))))
+
+
+```
+
+
+# Modeling (Random Forest)
+
+```{r}
+set.seed(1)
+rf_model <- train(salary ~ .,
+										 data = trainSet,
+										 method = "rf",
+										 trControl = myCtrl,
+									   tuneGrid = mtry_grid,
+									   ntree = 1000, 
+									   importance = TRUE)
+
+```
+
+## Resample 
+
+```{r}
+rf_model
+```
+
+## Variable Importance
+
+```{r}
+caret::varImp(rf_model)
+
+```
+
+Comments on Random Forest Variable Importance:\
+The top four variables by variable importance is games started, games played, age, and minutes per game.
+
+# Evaluation (Random Forest)
+
+```{r}
+predicted_rf <- predict(rf_model, testSet)
+test_rf <- round(forecast::accuracy(predicted_rf, testSet$salary),2)
+rownames(test_rf) <- "Random Forest"
+test_rf
+
+```
+
+## Evaluation Metrics Across All Trees
+
+```{r}
+rbind(test_rf, caret_bp_metrics, bpt_metrics)
+
+```
+Comments on Evaluation Metrics:\
+The Rpart Regression Tree performs best overall, with the lowest RMSE (3,372,027) and MAE (2,432,908), indicating the smallest average and squared prediction errors among the models. It also has the lowest MAPE (158.93%), meaning its salary predictions are the closest to the true values. While the Random Forest performs similarly, its higher percentage errors suggest slightly less consistent prediction accuracy.
+
+
+# Score (Random Forest)
+
+```{r}
+score_rf <- predict(rf_model, nba_score)
+rf_pip <- cbind(nba_score, score_rf, caret_score, rpart_score)
+rf_pip
+
+```
+Comments on Scoring Across Tree Models:\
+We trust the Rpart score predictions more because the evaluation metrics clearly show that the Rpart Regression Tree achieved the lowest RMSE (3,372,027) and lowest MAE (2,432,908) among all models.\
+These values indicate that its predictions are, on average, closest to the true player salaries, with smaller overall errors and less variation.\

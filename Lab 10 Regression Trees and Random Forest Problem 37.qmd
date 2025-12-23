@@ -1,0 +1,534 @@
+---
+title: "Lab 10: Regression Tress, Random Forest (Problem 37)"
+author: "Aaron Younger"
+format:
+  html: 
+    code-fold: false
+    code-overflow: wrap
+execute:
+  warning: false
+  messages: false
+  echo: true
+  include: true
+toc: false
+toc-location: left
+number-sections: false
+editor: source
+---
+
+# Business Understanding
+
+Jerry Stevenson is the manager of a travel agency. He wants to build a model that can predict customers’ annual spending on travel products. A Regression Tree and the Ensemble Method random forest will be used for predicting the customer’s annual household spending on travel products.
+
+
+# Data Understanding
+
+## R Version
+
+```{r}
+options(scipen=999)
+suppressWarnings(RNGversion("3.5.3"))
+
+```
+
+
+## Libraries
+
+```{r}
+library(readxl)
+library(DataExplorer)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(dlookr)
+library(e1071)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(pdp)
+library(gridExtra)
+
+```
+
+
+```{r}
+library(readxl)
+travel_data <- read_excel("jaggia_ba_2e_ch13_data.xlsx", 
+    sheet = "Travel_Data")
+View(travel_data)
+
+library(readxl)
+travel_score <- read_excel("jaggia_ba_2e_ch13_data.xlsx", 
+    sheet = "Travel_Score")
+View(travel_score)
+
+```
+
+Data Set Key:\
+
+- College: A binary variable representing if the individual went to College.\
+- Credit Card: A binary variable representing if the individual has a credit card.\
+- Food Spend: Annual household spending on Food.\
+- Income: The individuals annual income.\
+- Travel Spend: The annual household spending on travel products. The dependent variable.\
+
+## Dataset Exploration
+
+```{r}
+travel_data %>% head()
+travel_data %>% tail()
+travel_data %>% plot_intro()
+travel_data %>% glimpse()
+travel_data %>% plot_missing()
+travel_data %>% str()
+
+```
+
+## Variable EDA
+
+```{r}
+travel_data %>% plot_bar()
+prop.table(table(travel_data$College))
+prop.table(table(travel_data$CreditCard)) ## Categorical Variables are disproportioned, dominant level is the "no" value for both variables.
+
+travel_data %>% plot_density()
+
+skew_table <- data.frame(
+  Variable = c("Food Spend", "Income", "Travel Spend"),
+  Skewness = c(
+    skewness(travel_data$FoodSpend),
+    skewness(travel_data$Income),
+    skewness(travel_data$TravelSpend)
+  )
+)
+
+print(skew_table)
+
+```
+Comments on Variable EDA:\
+Both Categorical Variables are Binary and have observations in both levels. However, the levels are disproportionate with the dominant level being "no" for both College and Credit Card. The density plots for the numeric variables show that none of the variables are normally distributed. Food and Travel Spend show mild right skewness where most families spend lower on money on food and travel with a few families that spend higher amounts, pulling the distribution to the right. The Income variable shows some multiodality, which suggests possible subgroups within the data. The skewness values for these numeric variables are positive and less than one, supporting right skewness but suggesting that these variables can be considered approximately normal. 
+
+## Outliers
+
+```{r}
+diagnose_outlier(travel_data)
+diagnose_outlier(travel_score)
+
+travel_data %>% plot_boxplot(by="TravelSpend")
+
+foodout <- boxplot.stats(travel_data$FoodSpend)$out
+foodout_sorted <- sort(foodout, decreasing = TRUE)
+foodout_sorted
+hist(foodout_sorted)
+
+incout <- boxplot.stats(travel_data$Income)$out
+incout_sorted <- sort(incout, decreasing = TRUE)
+incout_sorted
+hist(incout_sorted)
+
+```
+Comments on Outliers:\
+There are no outliers in the score dataset. There are outliers in the modeling dataset but are not extreme enough to delete.\
+
+## Mean of Dependent Variable
+
+```{r}
+mean(travel_data$TravelSpend)
+```
+The Average value of spending on travel products is 2402, this value will be used in comparison against the train and test sets mean value of the dependent variable.\
+
+## Q-Q plot
+
+```{r}
+travel_data %>% plot_qq()
+
+```
+Comments on Q-Q plots:\
+The Q-Q plots of the numeric variables show that points follow closely along the diagonal reference line, with some deviations at the tail. This further supports that the variables are approximately normally distributed with mild right skewness.\
+
+
+## Correlation Matrix
+
+```{r}
+travel_data %>% plot_correlation()
+
+```
+Comments on Correlation Matrix:\
+This correlation matrix shows some interesting relationships among the variables. It is interesting that not having a credit card would lead to higher travel spend and income then not having a credit card, this relationships seems counterintuitive similarly, although not necessarily counterintuitive but interesting to note that not going to college also shows higher spending and income then people that did go to college. Travel Spend, has weak positive correlation with travel spend, people that did not attend college, and people that do not have a credit card.\
+
+
+# Data Preperation
+
+## Variable Transformation
+
+```{r}
+## Turn character variables into factors
+travel_data$College <- as.factor(travel_data$College)
+travel_data$CreditCard <- as.factor(travel_data$CreditCard)
+travel_data %>% str()
+
+```
+
+## Partition
+
+```{r}
+set.seed(1)
+myindex <- createDataPartition(travel_data$TravelSpend, p = 0.7, list = FALSE)
+trainset <- travel_data[myindex,]
+testset <- travel_data[-myindex,]
+
+cat("Mean of the depvar Trainset")
+mean(trainset$TravelSpend)
+cat("Mean of the depvar Testset")
+mean(testset$TravelSpend)
+
+
+```
+Comments on Data Partition:\
+The modeling dataset was partitioned into a 70/30 split, 70% of the data will be used to train the model and 30% of the dataset will be used to test the model. The means of travel spend for the train and test dataset were both close which means both have similar distributions of the dependent variable.\
+
+# Modeling (Regression Trees)
+
+## Cross Validation
+
+```{r}
+myctrl <- trainControl(method = "cv", number = 10)
+
+```
+
+## Default Tree (rpart)
+
+```{r}
+## Default tree using cp = 0.01
+set.seed(1)
+tree_default <- rpart(TravelSpend~., data = trainset, method="anova")
+rpart.plot(tree_default, type = 2, extra = 101, under = TRUE, fallen.leaves = TRUE)
+
+## Find number of leaf nodes in the default tree
+cat("Number of Leaf Nodes in the Default Tree: ")
+sum(tree_default$frame$var == "<leaf>")
+
+```
+Answer to Question 37 part A:\
+A) How many leaf nodes are in the default tree? What are the predictor variable and split value for the first split of the default regression tree?\
+
+- How many Leaf Nodes are in the default tree: There are 9 leaf nodes in the default tree.\
+- The predictor variable for the first split of the default regression tree is credit card. The split values are when credit card = yes the predicted mean Travel Spend is 1481, and if credit card = no then the predicted mean income is 2817.\
+
+## Full Grown Tree (rpart)
+
+```{r}
+set.seed(1)
+full_tree <- rpart(TravelSpend ~., data = trainset, control = rpart.control(cp = 0, minsplit = 2, minbucket = 1, maxdepth = 30, xval = 10))
+
+#xval = 10 is cross fold validation of 10, this is how to do it using rpart, used rpart to get correct values in the cp table
+
+head(full_tree$cptable)
+
+
+## Where to Find Answers to Part B
+
+min_error <- full_tree$cptable[which.min(full_tree$cptable[,"xerror"]),]
+min_error
+
+
+```
+
+Answer to Question 37 Part B:\
+B) Build a full-grown tree. Which cp value is associated with the lowest cross-validation error? How many splits are in the minimum-error tree? What is the minimum cross-validation error?\
+
+- CP value associated with the lowest cross-validation error: CP = 0.01437510.\
+- Number of splits that are in the minimum-error tree: 8.\
+- Minimum cross validation error: xerror = 0.62315809.\
+
+## Best Pruned Tree (rpart)
+
+```{r}
+## To find the best pruned tree, you take the minimum error found in the minimum error tree and add it to the minimum errors associated xstd value. These two values added together makes the best pruned trees threshold. Now we look for the lowest number of splits within the xerror threshold. 
+
+cpt <- full_tree$cptable
+
+imin      <- which.min(cpt[,"xerror"]) ## Grabs the row that the minimum error is on and defines it with a variable
+xerr_min  <- cpt[imin,"xerror"] ## Gets the xerror from row 5
+xstd_min  <- cpt[imin,"xstd"] ## gets the xstd from row 5
+threshold <- xerr_min + xstd_min ## Creates the xerror threshold for best pruned tree.
+threshold ## lowest amount of splits while staying below an xerror value of 0.6713177
+
+within_threshold <- which(cpt[,"xerror"] <= threshold)
+
+best_pruned_index <- within_threshold[which.min(cpt[within_threshold, "nsplit"])]
+
+best_pruned_cp <- cpt[best_pruned_index, "CP"]
+best_pruned_xerror <- cpt[best_pruned_index, "xerror"]
+best_pruned_nsplits <- cpt[best_pruned_index, "nsplit"]
+
+cat("Best-Pruned Tree (1-SE Rule)\n")
+cat("CP value:", best_pruned_cp, "\n")
+cat("Cross-validation error:", best_pruned_xerror, "\n")
+cat("Number of splits:", best_pruned_nsplits, "\n")
+
+
+```
+
+Answer to Question 37 Part C:\
+c. Is there a simpler tree with a cross-validation error that is within one standard error of the minimum error? If there is, then which cp value is associated with the best-pruned tree?\
+
+Yes, there is a simpler tree with a cross-validation error within one standard error of the minimum error. The cp value associated with the best-pruned tree is 0.01631113.\
+
+## Best tree (rpart)
+
+### Make Model
+
+```{r}
+best_pruned_tree <- prune(full_tree, cp=0.01631113)
+
+```
+
+### Variable Importance
+
+```{r}
+caret::varImp(best_pruned_tree)
+
+```
+Comments on Variable Importance:\
+Credit Card and College are the most important to the model. In the best pruned tree it can be expected that these variables will be predictor variables for splits.\
+
+```{r}
+rpart.plot(best_pruned_tree, type = 2, extra = 101, under = TRUE, fallen.leaves = TRUE)
+
+cat("Number of Leaf Nodes in the Pruned Tree: ")
+sum(best_pruned_tree$frame$var == "<leaf>")
+
+```
+Answer to Question 37 Part D:\
+D. Prune the full tree to the best-pruned tree or the minimum error tree if the answer to part c is “No.” Display the tree. How many leaf nodes are in the pruned tree?\
+
+There are three leaf nodoes in the pruned tree.\
+
+
+Comments on Best Pruned Tree:\
+The Best pruned tree has Two Splits, The first split is whether or not the individual has a credit card, if the individual has a credit card then his annual travel spending is 1481. If the individual does not have a credit card then the annual travel spending is 2817. The second split is over whether an individual went to college or not, this split happens only if the person does not have a credit card. If the person did go to college the annual travel spending is 2172 whereas if the person did not go to college the annual travel spending is 3050.\
+
+# Evaluation (rpart)
+
+## Evaluation Metrics
+
+```{r}
+predict_bpt <- predict(best_pruned_tree, testset)
+bpt_metrics <- round(forecast::accuracy(predict_bpt, testset$TravelSpend),2)
+
+## For inline code
+ME_value   <- bpt_metrics["Test set", "ME"]
+RMSE_value <- bpt_metrics["Test set", "RMSE"]
+MAE_value  <- bpt_metrics["Test set", "MAE"]
+MPE_value  <- bpt_metrics["Test set", "MPE"]
+MAPE_value <- bpt_metrics["Test set", "MAPE"]
+
+rownames(bpt_metrics) <- "Rpart Regression Tree"
+print(bpt_metrics)
+
+
+```
+Answer to Question 37 Part E:\
+E) What are the ME, RMSE, MAE, MPE, and MAPE of the pruned tree on the validation data?\
+
+- **ME Value:** 'r ME_value'.\
+- **RMSE Value:** 'r RMSE_value'.\
+- **MAE Value:** 'r MAE_value'.\
+- **MPE Value:** 'r MPE_value'%.\
+- **MAPE Value:** 'r MAPE_value'%.\
+
+Measures of Accuracy:\
+
+- **RMSE (Root Mean Square Error = 894.68)** and **MAE (Mean Absolute Error = 713.39)** show that the average prediction error of the pruned tree is roughly between **$700–$900** units from the actual value. \
+- **MAPE (Mean Absolute Percentage Error = 34.74%)** indicates that on average, predictions are off by about **35%** from the true travel spend values. \
+- Overall, the model demonstrates **moderate predictive accuracy** — it captures general trends but still has some variance in prediction magnitudes.\
+
+Measures of Bias:\
+
+- **ME (Mean Error = -1.35)** is close to zero, suggesting that the model is **unbiased** — it does not consistently over- or under-predict.\
+- **MPE (Mean Percentage Error = -14.75%)** is slightly negative, meaning the model **tends to slightly under-predict** actual values on average.\ 
+
+# Score (rpart)
+
+```{r}
+score_rpart <- predict(best_pruned_tree, travel_score)
+rpart_pip <- cbind(travel_score, score_rpart)
+rpart_pip
+
+
+```
+
+
+
+## Best Tree (caret)
+
+```{r}
+set.seed(1)
+best_tree <- train(TravelSpend ~., 
+                   data = trainset, 
+                   method = "rpart", 
+                   trControl = myctrl, 
+                   tuneLength = 25, 
+                   metric = "RMSE",
+                  control = rpart::rpart.control(minsplit = 2, minbucket = 1, cp = 0))
+
+best_tree$resample %>% 
+  arrange(RMSE) 
+
+best_tree$finalModel$cptable
+
+
+```
+
+### CP Values
+
+```{r}
+best_tree$results
+cat("\nBest Tuned cp Value: ", best_tree$bestTune$cp)
+
+
+```
+
+### Variable Importance
+
+```{r}
+print(caret::varImp(best_tree))
+```
+
+### Show Best Pruned Tree
+```{r}
+prp(best_tree$finalModel, type = 2, extra = 1, under = TRUE, digits = 3, fallen.leaves = TRUE)
+
+
+```
+
+### Number of Leaves in Best Tree (carert)
+
+```{r}
+cat("Number of Leaf Nodes in the Best Tree: ")
+sum(best_tree$finalModel$frame$var == "<leaf>")
+
+```
+
+
+# Evaluation (Caret Regression Tree)
+
+```{r}
+predict_bp <- predict(best_tree, testset)
+validation_metrics_tree <- round(forecast::accuracy(predict_bp, testset$TravelSpend),2)
+rownames(validation_metrics_tree) <- "Regression Tree"
+print(validation_metrics_tree)
+
+
+```
+
+# Scoring (Caret Regrerssion Tree)
+
+```{r}
+score_predict <- predict(best_tree, travel_score)
+pip <- cbind(travel_score, score_predict)
+knitr::kable(pip[order(pip$score_predict) , ])
+
+```
+
+
+# Data Partition (Random Forest)
+
+```{r}
+p <- ncol(trainset)-1
+
+mtry_center <- max(1, round(p/3))
+mtry_grid <- data.frame(mtry = sort(unique(pmax(1, c(mtry_center-1, mtry_center, mtry_center+1, 2, p)))))
+
+```
+
+# Modeling (Random Forest)
+
+```{r}
+set.seed(1)
+rf_model <- train(TravelSpend ~ .,
+										 data = trainset,
+										 method = "rf",
+										 trControl = myctrl,
+									   tuneGrid = mtry_grid,
+									   ntree = 1000, 
+									   importance = TRUE)
+
+
+
+```
+
+## Resample
+
+```{r}
+rf_model
+```
+
+## Variable Importance
+
+```{r}
+caret::varImp(rf_model)
+
+```
+
+## Partial Effects of Predictors
+
+```{r}
+## Predictors College, CreditCard, FoodSpend, Income
+
+train_x <- subset(trainset, select = -TravelSpend)
+
+pd_FoodSpend <- partial(object = rf_model,
+                        pred.var = "FoodSpend",
+                        train = train_x,
+                        grid.resolution = 50)
+pd_ccd <- partial(object = rf_model,
+                  pred.var = "CreditCard",
+                  train = train_x,
+                  grid.resolution = 50)
+pd_college <- partial(object = rf_model,
+                      pred.var = "College",
+                      train = train_x,
+                      grid.resolution = 50)
+
+pd_fs <- autoplot(pd_FoodSpend) + theme_minimal()
+pd_ccd <- autoplot(pd_ccd) + theme_minimal()
+pd_col <- autoplot(pd_college) + theme_minimal()
+
+grid.arrange(pd_ccd, pd_col, pd_fs, nrow = 2, ncol = 2, top = "Partial Dependence Plots of Predicted Balance for Top Predictors")
+
+```
+
+# Evaluation (Random Forest)
+
+```{r}
+predicted_rf <- predict(rf_model, testset)
+test_rf <- round(forecast::accuracy(predicted_rf, testset$TravelSpend),2)
+rownames(test_rf) <- "Random Forest"
+test_rf
+
+
+```
+## Compare Random Forest With Regression Tree
+
+```{r}
+rbind(validation_metrics_tree, test_rf, bpt_metrics)
+
+```
+Comments Random Forest vs Regression Tree:\
+The Random Forest performs better than the Regression tree. The Random forest is more accurate than the regression tree as its RMSE, MAE, and MAPE are lower than the regression trees. The Random Forest also has minimal bias compared to the regression tree as the Random Forests ME and MPE are lower than the Regression trees ME and MPE.\
+
+# Score (Random Forest)
+
+```{r}
+score_rf <- predict(rf_model, travel_score)
+rf_pip <- cbind(travel_score, score_rf, score_predict, score_rpart)
+rf_pip
+
+
+```
+Comments on Comparing Random Forests to Regression Tree:\
+The Random Forest model’s superior accuracy and low bias found in the key metrics suggest its travel spend predictions are more reliable than those of the regression tree. It is important to note that these predictions are not perfect and due to the Random Forests ME and MPE tend to slightly underpredict the true value.\
+
